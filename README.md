@@ -159,3 +159,15 @@ Inference creates:
 - Models are loaded locally
 - Elo ranking uses adaptive K-factor for convergence
 - Correlation with ground truth is calculated automatically
+
+## Citation
+
+If you use this code or methodology in your research, please cite:
+
+```bibtex
+@article{gregory2025elo,
+  title={A Novel Approach to Creativity Assessment: Forced Pairwise Ranking with Large Language Models},
+  author={Gregory, Phillip and Noh, Jiho and Grouchnikov, Sam},
+  year={2025}
+}
+```
