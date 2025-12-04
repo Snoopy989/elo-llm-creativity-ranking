@@ -79,6 +79,19 @@ metrics = calculate_metrics(final_df)
 ### `huggingface_downloader.py`
 Downloads models from Hugging Face (separate script for model acquisition).
 
+### `download_raw_data.py`
+Downloads the source datasets required for preprocessing and training.
+
+**Functions:**
+- Fetches raw data files from configured sources (e.g., cloud storage or URLs)
+- Saves datasets locally in a structured directory for subsequent parsing
+
+**Usage:**
+```bash
+python download_raw_data.py
+```
+Downloaded files will be placed under a local `data/` directory by default (or as configured inside the script).
+
 ### `requirements.txt`
 Lists all required Python packages.
 
