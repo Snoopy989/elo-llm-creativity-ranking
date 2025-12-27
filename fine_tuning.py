@@ -17,6 +17,21 @@ def setup_environment():
     print(f"Working dir: {Path.cwd()}")
     print(f"Python: {sys.executable}")
 
+    # Check CUDA availability - import torch if not already imported
+    try:
+        import torch
+        if not torch.cuda.is_available():
+            print("ERROR: CUDA is not available. This script requires a CUDA-compatible GPU.")
+            print("Please install PyTorch with CUDA support:")
+            print("pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121")
+            sys.exit(1)
+
+        print("CUDA is available")
+    except ImportError:
+        print("ERROR: PyTorch is not installed. Please install PyTorch with CUDA support:")
+        print("pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121")
+        sys.exit(1)
+
     os.environ.setdefault("TRANSFORMERS_NO_TF", "1")
     os.environ.setdefault("KERAS_BACKEND", "torch")
 
@@ -36,11 +51,21 @@ def setup_environment():
 
 def load_model_and_tokenizer():
     """Load the model and tokenizer."""
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    # Import torch here to ensure it's available
+    import torch
+
+    # Require CUDA - exit if not available
+    if not torch.cuda.is_available():
+        print("ERROR: CUDA is not available. This script requires a CUDA-compatible GPU.")
+        print("Please install PyTorch with CUDA support:")
+        print("pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121")
+        sys.exit(1)
+
+    device = torch.device("cuda")
     print(f"Using device: {device}")
 
     script_dir = Path(__file__).parent if "__file__" in globals() else Path.cwd()
-    local_model = script_dir / "downloaded_models" / "meta-llama_Llama-2-7b-hf"
+    local_model = script_dir / "downloaded_models" / "llama-2-7b"
     base_model = str(local_model) if local_model.exists() else "meta-llama/Llama-2-7b-hf"
     print(f"Base model: {base_model}")
 
@@ -54,7 +79,19 @@ def load_model_and_tokenizer():
         base_model, num_labels=3,
         local_files_only=local_model.exists(), torch_dtype=torch.bfloat16, device_map="auto"
     )
-    model.resize_token_embeddings(len(tokenizer))
+
+    # Resize token embeddings with error handling
+    try:
+        print("Resizing token embeddings...")
+        model.resize_token_embeddings(len(tokenizer))
+        print("Token embeddings resized successfully.")
+    except KeyboardInterrupt:
+        print("Token embedding resizing interrupted. Using model without resizing.")
+        print("Note: This may affect performance but allows training to continue.")
+    except Exception as e:
+        print(f"Warning: Token embedding resizing failed: {e}")
+        print("Continuing without resizing. Performance may be affected.")
+
     model.config.pad_token_id = tokenizer.pad_token_id
 
     lora_config = LoraConfig(
@@ -265,6 +302,7 @@ def evaluate_model(model, tokenizer, dataset):
 
 def main():
     """Main function to run the fine-tuning pipeline."""
+
     setup_environment()
     model, tokenizer = load_model_and_tokenizer()
     dataset = prepare_dataset(tokenizer)

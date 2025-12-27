@@ -7,3 +7,18 @@ openpyxl>=3.0.0
 xlsxwriter>=3.0.0
 jupyter>=1.0.0
 ipython>=7.0.0
+
+# ML packages
+torch>=2.0.0
+torchvision>=0.15.0
+torchaudio>=2.0.0
+transformers>=4.30.0
+datasets>=2.10.0
+peft>=0.4.0
+accelerate>=0.20.0
+python-dotenv>=1.0.0
+tf-keras>=2.15.0
+
+# Optional but recommended
+bitsandbytes>=0.41.0
+scipy>=1.10.0
