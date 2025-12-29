@@ -36,25 +36,55 @@ def load_data(input_file):
 
     print(f"Loaded {len(data)} rows from {input_file}")
     print(f"Columns: {data.columns.tolist()}")
+    
+    # Filter by 'cut' column FIRST (keep only rows where cut == 'keep')
+    if 'cut' in data.columns:
+        original_count = len(data)
+        data = data[data['cut'] == 'keep'].reset_index(drop=True)
+        removed_count = original_count - len(data)
+        print(f"Filtered by 'cut' column: removed {removed_count:,} rows with cut != 'keep'")
+        print(f"After filtering: {len(data):,} rows remaining")
+    else:
+        print("WARNING: 'cut' column not found. Proceeding without filtering.")
 
     return data
 
-def remove_duplicate_responses(df, strategy='keep_first'):
-    """Remove duplicate responses to prevent data leakage."""
+def handle_duplicate_responses(df):
+    """
+    Handle duplicate responses by averaging their scores.
+    Follows the approach from the original SCTT paper.
+    """
     original_count = len(df)
-    response_counts = df['response'].value_counts()
-    duplicates = response_counts[response_counts > 1]
-
-    print(f"Before: {original_count:,} rows, {len(duplicates):,} duplicate response texts")
-
-    if strategy == 'keep_first':
-        df = df.drop_duplicates(subset=['response'], keep='first')
-    elif strategy == 'keep_last':
-        df = df.drop_duplicates(subset=['response'], keep='last')
-    elif strategy == 'keep_highest_score':
-        df = df.sort_values('judge_response', ascending=False).drop_duplicates(subset=['response'], keep='first').sort_index()
-
-    print(f"After: {len(df):,} rows (removed {original_count - len(df):,})")
+    
+    # Identify duplicates (same item, task, prompt, AND response)
+    dupes = df[df.duplicated(subset=['item', 'task', 'prompt', 'response'], keep=False)]
+    
+    if len(dupes) == 0:
+        print(f"No duplicates found. Total rows: {original_count:,}")
+        return df
+    
+    print(f"Found {len(dupes):,} duplicate entries (before averaging)")
+    
+    # Average scores across duplicate responses
+    agg_dict = {'judge_response': 'mean'}
+    
+    # Add optional columns if they exist
+    if 'standard_error' in dupes.columns:
+        agg_dict['standard_error'] = 'mean'
+    if 'study_id' in dupes.columns:
+        agg_dict['study_id'] = 'first'
+    if 'ID' in dupes.columns:
+        agg_dict['ID'] = 'first'
+    
+    dupes_avg = dupes.groupby(['item', 'task', 'prompt', 'response'], as_index=False).agg(agg_dict).reset_index(drop=True)
+    
+    # Remove all duplicates, then add back the averaged versions
+    df = df.drop(list(dupes.index), axis=0)
+    df = pd.concat([df, dupes_avg]).reset_index(drop=True)
+    
+    print(f"After averaging: {len(df):,} rows (removed {original_count - len(df):,} duplicate entries)")
+    print(f"  Unique duplicate groups averaged: {len(dupes_avg):,}")
+    
     return df
 
 def create_individual_files(df, output_dir="grouped_data"):
@@ -232,7 +262,7 @@ def main():
         sys.exit(1)
 
     df = load_data(input_file)
-    df = remove_duplicate_responses(df)
+    df = handle_duplicate_responses(df)
     create_individual_files(df)
     pairs_df = create_pairs_dataset(df)
 

@@ -5,7 +5,19 @@ import os
 import sys
 import platform
 from pathlib import Path
+import warnings
+
+# Suppress warnings and set environment variables BEFORE importing ML libraries
+warnings.filterwarnings('ignore')
+os.environ.setdefault("TRANSFORMERS_NO_TF", "1")
+os.environ.setdefault("KERAS_BACKEND", "torch")
+os.environ.setdefault("TF_CPP_MIN_LOG_LEVEL", "3")
+os.environ.setdefault("TF_ENABLE_ONEDNN_OPTS", "0")
+os.environ.setdefault("CUDA_VISIBLE_DEVICES", "0")
+os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
+
 import torch
+import logging
 from transformers import AutoTokenizer, AutoModelForSequenceClassification, TrainingArguments, Trainer, DataCollatorWithPadding
 from peft import LoraConfig, get_peft_model
 from datasets import DatasetDict, Dataset
@@ -27,14 +39,16 @@ def setup_environment():
             sys.exit(1)
 
         print("CUDA is available")
+        # Clear GPU cache to free up memory
+        torch.cuda.empty_cache()
+        print(f"GPU memory allocated: {torch.cuda.memory_allocated()/1024**3:.2f} GB")
+        print(f"GPU memory reserved: {torch.cuda.memory_reserved()/1024**3:.2f} GB")
     except ImportError:
         print("ERROR: PyTorch is not installed. Please install PyTorch with CUDA support:")
         print("pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121")
         sys.exit(1)
 
-    os.environ.setdefault("TRANSFORMERS_NO_TF", "1")
-    os.environ.setdefault("KERAS_BACKEND", "torch")
-
+    # Environment variables already set at module level
     if platform.system() == "Windows":
         os.environ.setdefault("BITSANDBYTES_NOWELCOME", "1")
         os.environ.setdefault("DISABLE_BITSANDBYTES_WARN", "1")
@@ -77,8 +91,11 @@ def load_model_and_tokenizer():
 
     model = AutoModelForSequenceClassification.from_pretrained(
         base_model, num_labels=3,
-        local_files_only=local_model.exists(), torch_dtype=torch.bfloat16, device_map="auto"
+        local_files_only=local_model.exists(), dtype=torch.bfloat16
     )
+    
+    # Move model to CUDA device
+    model.to(device)
 
     # Resize token embeddings with error handling
     try:
@@ -131,6 +148,12 @@ def prepare_dataset(tokenizer):
         raise FileNotFoundError("pairs_dataset.csv not found")
 
     df = pd.read_csv(dataset_file)
+    # Limit dataset size for testing to avoid memory issues
+    max_samples = 10000  # Adjust as needed
+    if len(df) > max_samples:
+        print(f"Dataset has {len(df)} samples, limiting to {max_samples} for testing")
+        df = df.sample(n=max_samples, random_state=42).reset_index(drop=True)
+    
     train_df = df[df['split'] == 'train']
     test_df = df[df['split'] == 'test']
 
@@ -184,16 +207,20 @@ def create_training_args():
     args_kwargs = {
         "output_dir": "./results",
         "num_train_epochs": 5,
-        # "max_steps": 150000, # To use max_steps instead of epochs, uncomment this line
         "per_device_train_batch_size": 32,
         "gradient_accumulation_steps": 4,
         "per_device_eval_batch_size": 64,
         "fp16": False,
         "warmup_steps": 0,
         "weight_decay": 0.01,
-        "logging_steps": 500,
-        "dataloader_num_workers": 8,
+        "logging_steps": 50,  # More frequent logging (was 500)
+        "eval_steps": 100,  # Evaluate every 100 steps
+        "eval_strategy": "steps",  # Evaluate during training
+        "dataloader_num_workers": 0,  # Disabled to avoid PyArrow multiprocessing issues
         "dataloader_pin_memory": True,
+        "logging_first_step": True,  # Log first step
+        "log_level": "info",  # Set logging level
+        "log_level_replica": "warning",  # Reduce replica logging noise
     }
 
     if "bf16" in sig_params:
@@ -205,29 +232,58 @@ def create_training_args():
     if "dispatch_batches" in sig_params:
         args_kwargs["dispatch_batches"] = False
 
+    # Ensure save and eval strategies match (required for load_best_model_at_end)
     if "save_strategy" in sig_params:
         args_kwargs["save_strategy"] = "steps"
     if "save_steps" in sig_params:
-        args_kwargs["save_steps"] = 10000
+        args_kwargs["save_steps"] = 500  # More frequent saves for monitoring
     if "save_total_limit" in sig_params:
         args_kwargs["save_total_limit"] = 5
 
+    # Explicitly ensure evaluation_strategy is set in args_kwargs if eval_steps is present
+    if "eval_steps" in sig_params and args_kwargs.get("eval_steps"):
+        if "evaluation_strategy" not in args_kwargs or args_kwargs["evaluation_strategy"] != "steps":
+            args_kwargs["evaluation_strategy"] = "steps"
+
     if "load_best_model_at_end" in sig_params:
-        args_kwargs["load_best_model_at_end"] = False
+        args_kwargs["load_best_model_at_end"] = True  # Load best model
     if "metric_for_best_model" in sig_params:
         args_kwargs["metric_for_best_model"] = "eval_loss"
     if "greater_is_better" in sig_params:
         args_kwargs["greater_is_better"] = False
 
     if "report_to" in sig_params:
-        args_kwargs["report_to"] = []
+        args_kwargs["report_to"] = ["tensorboard"]  # Enable TensorBoard logging
 
     filtered_args = {k: v for k, v in args_kwargs.items() if k in sig_params and k != 'dispatch_batches'}
+    
+    # Validate strategy matching
+    save_strat = filtered_args.get("save_strategy", "no")
+    eval_strat = filtered_args.get("eval_strategy", "no")
+    if filtered_args.get("load_best_model_at_end") and save_strat != eval_strat:
+        print(f"WARNING: Strategy mismatch detected!")
+        print(f"  Save strategy: {save_strat}")
+        print(f"  Eval strategy: {eval_strat}")
+        print(f"  Forcing both to 'steps' for consistency")
+        filtered_args["save_strategy"] = "steps"
+        filtered_args["eval_strategy"] = "steps"
 
     return TrainingArguments(**filtered_args)
 
 def train_model(model, tokenizer, dataset, training_args):
     """Train the model."""
+    # Setup logging
+    logging.basicConfig(
+        format='%(asctime)s - %(levelname)s - %(name)s - %(message)s',
+        datefmt='%m/%d/%Y %H:%M:%S',
+        level=logging.INFO,
+    )
+    logger = logging.getLogger(__name__)
+    
+    # Set transformers logging
+    from transformers import logging as transformers_logging
+    transformers_logging.set_verbosity_info()
+    
     data_collator = DataCollatorWithPadding(tokenizer=tokenizer)
 
     trainer = Trainer(
@@ -236,21 +292,39 @@ def train_model(model, tokenizer, dataset, training_args):
         train_dataset=dataset["train"],
         eval_dataset=dataset["test"],
         data_collator=data_collator,
-        tokenizer=tokenizer,
+        processing_class=tokenizer,
     )
 
-    print("Starting training...")
+    print("\n" + "="*80)
+    print("STARTING TRAINING")
+    print("="*80)
+    print(f"Training samples: {len(dataset['train']):,}")
+    print(f"Evaluation samples: {len(dataset['test']):,}")
+    print(f"Batch size: {training_args.per_device_train_batch_size}")
+    print(f"Epochs: {training_args.num_train_epochs}")
+    print(f"Learning rate: {training_args.learning_rate}")
+    print(f"Logging every {training_args.logging_steps} steps")
+    print(f"Evaluating every {training_args.eval_steps} steps")
+    print(f"Device: {training_args.device}")
+    print("="*80 + "\n")
+    
     train_result = trainer.train()
-    print("Training finished.")
+    
+    print("\n" + "="*80)
+    print("TRAINING COMPLETED")
+    print("="*80)
+    print(f"Final training loss: {train_result.training_loss:.4f}")
+    print(f"Total steps: {train_result.global_step}")
+    print("="*80 + "\n")
 
     output_dir = Path("./results/lora_adapter")
     output_dir.mkdir(parents=True, exist_ok=True)
     try:
         model.save_pretrained(output_dir)
         tokenizer.save_pretrained(output_dir)
-        print(f"Saved LoRA adapter to {output_dir}")
+        print(f"✓ Saved LoRA adapter to {output_dir}")
     except Exception as e:
-        print("Warning saving adapter:", e)
+        print(f"✗ Warning saving adapter: {e}")
 
     merged_dir = Path("./fine_tuned_model")
     try:
@@ -258,12 +332,12 @@ def train_model(model, tokenizer, dataset, training_args):
         merged = merge_and_unload(model)
         merged.save_pretrained(merged_dir)
         tokenizer.save_pretrained(merged_dir)
-        print(f"Saved merged model to {merged_dir}")
+        print(f"✓ Saved merged model to {merged_dir}")
     except Exception as e:
-        print("Could not merge adapters; saving current model state instead:", e)
+        print(f"✗ Could not merge adapters; saving current model state instead: {e}")
         model.save_pretrained(merged_dir)
         tokenizer.save_pretrained(merged_dir)
-        print(f"Saved model (unmerged) to {merged_dir}")
+        print(f"✓ Saved model (unmerged) to {merged_dir}")
 
 def evaluate_model(model, tokenizer, dataset):
     """Evaluate the model."""
@@ -309,6 +383,12 @@ def main():
     training_args = create_training_args()
     train_model(model, tokenizer, dataset, training_args)
     evaluate_model(model, tokenizer, dataset)
+    
+    print("\n" + "="*80)
+    print("To view training curves, run:")
+    print("  tensorboard --logdir ./results")
+    print("Then open: http://localhost:6006")
+    print("="*80 + "\n")
 
 if __name__ == "__main__":
     main()
