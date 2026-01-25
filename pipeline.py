@@ -8,230 +8,295 @@ This script automates the entire pipeline from data download to evaluation:
 1. Download raw data
 2. Parse and clean data
 3. Download model (if needed)
-4. Fine-tune the model
-5. Run inference and evaluation
+4. Fine-tune the model with curriculum learning
+5. Compute epoch-wise results
+6. Calculate metrics
+7. Run inference
 
 Usage:
     python pipeline.py
 
 Requirements:
     - All dependencies from requirements.txt installed
-    - For model download: Set Hugging Face token in huggingface_downloader.py if model not already downloaded
+    - CUDA-enabled GPU for training
+    - Hugging Face token for model access
 """
 
 import subprocess
 import sys
 import os
 from pathlib import Path
+from typing import Optional, List, Tuple
 
-def run_step(step_name, script_name, cwd=None):
-    """Run a pipeline step and report progress."""
-    print(f"\n{'='*50}")
-    print(f"STARTING: {step_name}")
-    print(f"{'='*50}")
 
-    # Use the current Python executable to ensure compatibility
-    command = [sys.executable, script_name]
-
-    try:
-        result = subprocess.run(command, cwd=cwd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-        if result.returncode == 0:
-            print(f"\n{'='*50}")
-            print(f"COMPLETED: {step_name}")
-            print(f"{'='*50}")
-            if result.stdout.strip():
-                print("Output:")
-                print(result.stdout)
-        else:
-            print(f"\n{'='*50}")
-            print(f"FAILED: {step_name}")
-            print(f"{'='*50}")
-            print("Error output:")
-            print(result.stderr)
-            print(f"Return code: {result.returncode}")
-            sys.exit(1)
-    except Exception as e:
-        print(f"\n{'='*50}")
-        print(f"ERROR: {step_name}")
-        print(f"{'='*50}")
-        print(f"Exception: {e}")
-        sys.exit(1)
-
-def check_file_exists(filepath, description):
-    """Check if a required file exists."""
-    if os.path.exists(filepath):
-        print(f"✓ Found {description}: {filepath}")
-        return True
-    else:
-        print(f"✗ Missing {description}: {filepath}")
-        return False
-
-def main():
-    """Main pipeline function."""
-    print("LLM Fine-Tuning Pipeline Automation")
-    print("===================================")
-
-    # Get the current directory
-    script_dir = Path(__file__).parent
-    os.chdir(script_dir)
-
-    # Install CUDA PyTorch first
-    print("Installing CUDA PyTorch...")
-    try:
-        result = subprocess.run([sys.executable, "-m", "pip", "install", "torch", "torchvision", "torchaudio", 
-                               "--index-url", "https://download.pytorch.org/whl/cu121"], 
-                              stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-        if result.returncode != 0:
-            print("Warning: Failed to install CUDA PyTorch. GPU acceleration may not work.")
-            print("Error:", result.stderr)
-        else:
-            print("✓ CUDA PyTorch installed successfully.")
-    except Exception as e:
-        print(f"Warning: Could not install CUDA PyTorch: {e}")
-
-    # Verify CUDA is working
-    print("Verifying CUDA installation...")
-    try:
-        import torch
-        if torch.cuda.is_available():
-            print("✓ CUDA is available and working!")
-            print(f"  GPU: {torch.cuda.get_device_name(0)}")
-        else:
-            print("⚠ CUDA is not available. Running troubleshooting...")
-            # Run the CUDA troubleshooting script
-            troubleshoot_result = subprocess.run([sys.executable, "cuda_troubleshoot.py"], 
-                                              stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-            print("Troubleshooting output:")
-            print(troubleshoot_result.stdout)
-            if troubleshoot_result.stderr:
-                print("Troubleshooting errors:")
-                print(troubleshoot_result.stderr)
-            
-            # Check again after troubleshooting
-            import importlib
-            importlib.reload(torch)
-            if torch.cuda.is_available():
-                print("✓ CUDA is now working after troubleshooting!")
-            else:
-                print("⚠ CUDA troubleshooting completed but still not available.")
-                print("The pipeline will continue but GPU acceleration will not be used.")
-    except ImportError:
-        print("⚠ PyTorch not available for CUDA check. Continuing without GPU verification.")
-
-    # Install requirements
-    if os.path.exists("requirements.txt"):
-        print("Installing Python dependencies...")
+class PipelineRunner:
+    """Manages the complete LLM fine-tuning and evaluation pipeline."""
+    
+    def __init__(self, working_directory: Optional[Path] = None):
+        """
+        Initialize pipeline runner.
+        
+        Args:
+            working_directory: Base directory for pipeline operations (defaults to script directory)
+        """
+        self.script_dir = working_directory or Path(__file__).parent
+        os.chdir(self.script_dir)
+        
+        self.required_scripts = [
+            "download_raw_data.py",
+            "parse_data.py",
+            "huggingface_downloader.py",
+            "fine_tuning_curriculum.py",
+            "inference.py",
+            "compute_epoch_wise_results.py",
+            "calculate_metrics.py"
+        ]
+    
+    def run_step(self, step_name: str, script_name: str, cwd: Optional[Path] = None) -> subprocess.CompletedProcess:
+        """
+        Execute a pipeline step and report progress.
+        
+        Args:
+            step_name: Human-readable name of the step
+            script_name: Python script filename to execute
+            cwd: Working directory for script execution
+        
+        Returns:
+            CompletedProcess object with execution results
+        
+        Raises:
+            SystemExit: If script execution fails
+        """
+        command = [sys.executable, script_name]
+        
         try:
-            result = subprocess.run([sys.executable, "-m", "pip", "install", "-r", "requirements.txt"], 
-                                  stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-            if result.returncode != 0:
-                print("Warning: Failed to install requirements. Please install manually.")
-                print("Error:", result.stderr)
+            result = subprocess.run(
+                command, 
+                cwd=cwd, 
+                stdout=subprocess.PIPE, 
+                stderr=subprocess.PIPE, 
+                text=True
+            )
+            
+            if result.returncode == 0:
+                return result
             else:
-                print("✓ Dependencies installed successfully.")
+                print(f"ERROR: {step_name} failed")
+                print(result.stderr)
+                sys.exit(1)
+                
         except Exception as e:
-            print(f"Warning: Could not install requirements: {e}")
-    else:
-        print("Warning: requirements.txt not found. Please ensure dependencies are installed.")
-
-    # Install tf-keras for compatibility with transformers
-    print("Installing tf-keras and python-dotenv for environment handling...")
-    try:
-        result = subprocess.run([sys.executable, "-m", "pip", "install", "tf-keras", "python-dotenv"], 
-                              stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-        if result.returncode != 0:
-            print("Warning: Failed to install tf-keras and python-dotenv. Some features may fail.")
-            print("Error:", result.stderr)
-        else:
-            print("✓ tf-keras and python-dotenv installed successfully.")
-    except Exception as e:
-        print(f"Warning: Could not install tf-keras and python-dotenv: {e}")
-
-    # Check if all required scripts exist
-    required_scripts = [
-        "download_raw_data.py",
-        "parse_data.py",
-        "huggingface_downloader.py",
-        "fine_tuning.py",
-        "inference.py"
-    ]
-
-    missing_scripts = []
-    for script in required_scripts:
-        if not (script_dir / script).exists():
-            missing_scripts.append(script)
-
-    if missing_scripts:
-        print(f"ERROR: Missing required scripts: {', '.join(missing_scripts)}")
-        print(f"Please ensure all scripts are in the same directory as pipeline.py: {script_dir}")
-        sys.exit(1)
-
-    print("✓ All required scripts found.")
-
-    # Step 1: Download raw data
-    if os.path.exists("all_sctt_jrt.csv"):
-        print("✓ Raw data already exists. Skipping download step.")
-        print("  Found: all_sctt_jrt.csv")
-    else:
-        run_step("Download Raw Data", "download_raw_data.py")
-
-    # Check if data was downloaded
-    if not check_file_exists("all_sctt_jrt.csv", "raw data file"):
-        print("ERROR: Raw data download failed - all_sctt_jrt.csv not found.")
-        sys.exit(1)
-
-    # Step 2: Parse and clean data
-    # Check if parsing has already been done
-    parse_outputs_exist = (
-        os.path.exists("pairs_dataset.csv") and
-        os.path.exists("split_assignments.csv") and
-        os.path.exists("grouped_data")
-    )
-
-    if parse_outputs_exist:
-        print("✓ Data parsing outputs already exist. Skipping parse/clean step.")
-        print("  Found: pairs_dataset.csv, split_assignments.csv, grouped_data/")
-    else:
-        run_step("Parse and Clean Data", "parse_data.py")
-
-    # Verify parsing outputs exist after running
-    if not (os.path.exists("pairs_dataset.csv") and os.path.exists("split_assignments.csv")):
-        print("ERROR: Data parsing failed - required output files not found.")
-        sys.exit(1)
-
-    # Step 3: Download model (optional, skip if already exists)
-    model_dir = script_dir / "downloaded_models" / "llama-2-7b"
-    if model_dir.exists() and any(model_dir.iterdir()):
-        print(f"✓ Model already exists: {model_dir}")
-    else:
-        print("\nModel not found locally. Attempting to download from Hugging Face...")
-        print("Note: Make sure to set your Hugging Face token in huggingface_downloader.py")
-        run_step("Download Model", "huggingface_downloader.py")
-        # Verify model was downloaded
-        if not (model_dir.exists() and any(model_dir.iterdir())):
-            print("ERROR: Model download failed - model directory not found or empty.")
+            print(f"ERROR: {step_name} - {e}")
             sys.exit(1)
+    
+    def check_file_exists(self, filepath: str, description: str) -> bool:
+        """
+        Verify that a required file exists.
+        
+        Args:
+            filepath: Path to file to check
+            description: Human-readable description of file
+        
+        Returns:
+            True if file exists, False otherwise
+        """
+        if os.path.exists(filepath):
+            return True
+        else:
+            print(f"ERROR: Missing {description}")
+            return False
+    
+    def setup_cuda_environment(self) -> None:
+        """Install and verify CUDA PyTorch installation."""
+        if os.path.exists("cuda_install.py"):
+            try:
+                result = subprocess.run(
+                    [sys.executable, "cuda_install.py"],
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    text=True
+                )
+                if result.returncode != 0:
+                    print("WARNING: CUDA installation script encountered issues")
+                    print(result.stderr)
+                else:
+                    print("SUCCESS: CUDA installation completed")
+            except Exception as e:
+                print(f"WARNING: Could not run CUDA installation script: {e}")
+        else:
+            print("WARNING: cuda_install.py not found")
+        
+        self._verify_cuda()
+    
+    def _verify_cuda(self) -> None:
+        """Verify CUDA availability and run troubleshooting if needed."""
+        try:
+            import torch
+            if torch.cuda.is_available():
+                print(f"SUCCESS: CUDA available - {torch.cuda.get_device_name(0)}")
+            else:
+                print("WARNING: CUDA not available, running troubleshooting")
+                self._run_cuda_troubleshooting()
+        except ImportError:
+            print("WARNING: PyTorch not available for CUDA check")
+    
+    def _run_cuda_troubleshooting(self) -> None:
+        """Execute CUDA troubleshooting script."""
+        subprocess.run(
+            [sys.executable, "cuda_troubleshoot.py"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True
+        )
+        
+        import importlib
+        import torch
+        importlib.reload(torch)
+        if torch.cuda.is_available():
+            print("SUCCESS: CUDA working after troubleshooting")
+        else:
+            print("WARNING: CUDA troubleshooting failed, GPU acceleration unavailable")
+    
+    def install_dependencies(self) -> None:
+        """Install required Python packages."""
+        if os.path.exists("requirements.txt"):
+            try:
+                result = subprocess.run(
+                    [sys.executable, "-m", "pip", "install", "-r", "requirements.txt"],
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    text=True
+                )
+                if result.returncode != 0:
+                    print("WARNING: Failed to install requirements")
+                    print(result.stderr)
+                else:
+                    print("SUCCESS: Dependencies installed")
+            except Exception as e:
+                print(f"WARNING: Could not install requirements: {e}")
+        else:
+            print("WARNING: requirements.txt not found")
+        
+        # Install additional packages
+        try:
+            result = subprocess.run(
+                [sys.executable, "-m", "pip", "install", "tf-keras", "python-dotenv"],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True
+            )
+            if result.returncode != 0:
+                print("WARNING: Failed to install tf-keras and python-dotenv")
+            else:
+                print("SUCCESS: Additional packages installed")
+        except Exception as e:
+            print(f"WARNING: Could not install additional packages: {e}")
+    
+    def validate_required_scripts(self) -> None:
+        """Verify all required scripts are present."""
+        missing_scripts = []
+        for script in self.required_scripts:
+            if not (self.script_dir / script).exists():
+                missing_scripts.append(script)
+        
+        if missing_scripts:
+            print(f"ERROR: Missing required scripts: {', '.join(missing_scripts)}")
+            sys.exit(1)
+        
+        print("SUCCESS: All required scripts found")
+    
+    def download_raw_data(self) -> None:
+        """Download or verify raw data existence."""
+        if os.path.exists("all_sctt_jrt.csv"):
+            print("SUCCESS: Raw data found")
+        else:
+            self.run_step("Download Raw Data", "download_raw_data.py")
+        
+        if not self.check_file_exists("all_sctt_jrt.csv", "raw data file"):
+            sys.exit(1)
+    
+    def parse_and_clean_data(self) -> None:
+        """Parse and clean data into train/val/test splits."""
+        parse_outputs_exist = (
+            os.path.exists("pairs_train.csv") and
+            os.path.exists("pairs_val.csv") and
+            os.path.exists("pairs_test.csv")
+        )
+        
+        if parse_outputs_exist:
+            print("SUCCESS: Data parsing outputs found")
+        else:
+            self.run_step("Parse and Clean Data", "parse_data.py")
+        
+        if not (os.path.exists("pairs_train.csv") and 
+                os.path.exists("pairs_val.csv") and 
+                os.path.exists("pairs_test.csv")):
+            print("ERROR: Data parsing failed")
+            sys.exit(1)
+    
+    def download_model(self) -> None:
+        """Download or verify model existence."""
+        model_dir = self.script_dir / "downloaded_models" / "llama-2-7b"
+        if model_dir.exists() and any(model_dir.iterdir()):
+            print(f"SUCCESS: Model found")
+        else:
+            self.run_step("Download Model", "huggingface_downloader.py")
+            
+            if not (model_dir.exists() and any(model_dir.iterdir())):
+                print("ERROR: Model download failed")
+                sys.exit(1)
+    
+    def fine_tune_model(self) -> None:
+        """Fine-tune model with curriculum learning."""
+        if os.path.exists("fine_tuned_model_curriculum"):
+            print("SUCCESS: Fine-tuned model found (skipping training)")
+        else:
+            self.run_step("Fine-Tune Model", "fine_tuning_curriculum.py")
+        
+        if not self.check_file_exists("fine_tuned_model_curriculum", "fine-tuned model"):
+            sys.exit(1)
+    
+    def compute_epoch_results(self) -> None:
+        """Compute epoch-wise performance to identify best checkpoint."""
+        self.run_step("Compute Epoch-Wise Results", "compute_epoch_wise_results.py")
+        
+        if not self.check_file_exists("epoch_wise_LORA_results.csv", "epoch-wise results file"):
+            print("WARNING: Epoch-wise results not found. Continuing anyway.")
+    
+    def calculate_metrics(self) -> None:
+        """Calculate final evaluation metrics."""
+        self.run_step("Calculate Metrics", "calculate_metrics.py")
+    
+    def run_inference(self) -> None:
+        """Run inference if script is available."""
+        if os.path.exists("inference.py"):
+            try:
+                self.run_step("Run Inference", "inference.py")
+            except:
+                print("WARNING: Inference step failed (optional)")
+    
+    def print_summary(self) -> None:
+        """Print pipeline completion summary."""
+        print("\nSUCCESS: Pipeline completed")
+        print("Results:")
+        print("  - epoch_wise_LORA_results.csv")
+        print("  - sctt_results_* directories")
+    
+    def run(self) -> None:
+        """Execute the complete pipeline."""
+        self.setup_cuda_environment()
+        self.install_dependencies()
+        self.validate_required_scripts()
+        self.download_raw_data()
+        self.parse_and_clean_data()
+        self.download_model()
+        self.fine_tune_model()
+        self.compute_epoch_results()
+        self.calculate_metrics()
+        self.run_inference()
+        self.print_summary()
 
-    # Step 4: Fine-tune the model
-    if os.path.exists("fine_tuned_model"):
-        print("✓ Fine-tuned model already exists. Skipping fine-tuning step.")
-        print("  Found: fine_tuned_model/")
-        print("  Note: Delete the directory if you want to retrain the model.")
-    else:
-        run_step("Fine-Tune Model", "fine_tuning.py")
-
-    # Check if fine-tuned model exists
-    if not check_file_exists("fine_tuned_model", "fine-tuned model directory"):
-        print("ERROR: Model fine-tuning failed - fine_tuned_model directory not found.")
-        sys.exit(1)
-
-    # Step 5: Run inference and evaluation
-    run_step("Run Inference and Evaluation", "inference.py")
-
-    print("\n" + "="*50)
-    print("PIPELINE COMPLETED SUCCESSFULLY!")
-    print("="*50)
-    print("Check the output above for results and metrics.")
 
 if __name__ == "__main__":
-    main()
+    pipeline = PipelineRunner()
+    pipeline.run()

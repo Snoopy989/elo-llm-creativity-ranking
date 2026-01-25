@@ -275,7 +275,6 @@ Inference creates:
 ### CUDA-Specific Issues
 - **"PyTorch CPU version detected"**: Pipeline installs CUDA PyTorch; restart Python session if needed
 - **"cuDNN version mismatch"**: Update GPU drivers or use compatible PyTorch/CUDA versions
-- **"Device-side assert triggered"**: Usually indicates data preprocessing issues
 
 ### General
 - Check the pipeline output for specific error messages
