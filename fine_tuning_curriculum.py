@@ -220,10 +220,16 @@ class CurriculumTrainer:
             'accuracy': accuracy
         }
     
-    def train(self, total_epochs: int = 10, 
+    def train(self, 
+              total_epochs: int = 10, 
               max_length: int = 180,
-              batch_size: int = 32,
-              gradient_accumulation_steps: int = 4) -> None:
+              batch_size: int = 2,
+              gradient_accumulation_steps: int = 8,
+              learning_rate: float = 2e-5,
+              max_grad_norm: float = 0.5,
+              fp16: bool = True,
+            #   dataloader_num_workers: int = 2,
+              gradient_checkpointing: bool = True) -> None:
         """
         Train model with curriculum learning.
         
@@ -245,7 +251,12 @@ class CurriculumTrainer:
                 curriculum_phase, 
                 epochs_in_phase,
                 batch_size,
-                gradient_accumulation_steps
+                gradient_accumulation_steps,
+                learning_rate,
+                max_grad_norm,
+                fp16,
+                # dataloader_num_workers,
+                gradient_checkpointing
             )
     
     def _create_curriculum_schedule(self, total_epochs: int) -> list:
@@ -274,16 +285,23 @@ class CurriculumTrainer:
         for epoch, phase in enumerate(schedule, 1):
             print(f"Epoch {epoch}: {phase_names[phase]}")
     
-    def _train_phase(self, phase_idx: int, 
+    def _train_phase(self, 
+                     phase_idx: int, 
                      curriculum_phase: int,
                      epochs_in_phase: int,
                      batch_size: int,
-                     gradient_accumulation_steps: int) -> None:
+                     gradient_accumulation_steps: int,
+                     learning_rate: float,
+                     max_grad_norm: float,
+                     fp16: bool,
+                    #  dataloader_num_workers: int,
+                     gradient_checkpointing: bool) -> None:
         """Train a single curriculum phase."""
         print("\n" + "="*60)
         print(f"PHASE {phase_idx}: DIFFICULTY LEVEL {curriculum_phase}")
         print(f"Training for {epochs_in_phase} epochs")
         print("="*60)
+        
         
         # Load dataset for this phase
         dataset = self.dataset_builder.load_datasets(curriculum_phase=curriculum_phase)
@@ -296,7 +314,9 @@ class CurriculumTrainer:
             num_train_epochs=epochs_in_phase,
             per_device_train_batch_size=batch_size,
             gradient_accumulation_steps=gradient_accumulation_steps,
-            learning_rate = 5e-5,
+            gradient_checkpointing=gradient_checkpointing,
+            max_grad_norm=max_grad_norm,
+            learning_rate=learning_rate,
             warmup_steps=1000,
             # weight_decay=0.01, # Disabled weight decay to align with original settings
             logging_steps=10,
@@ -430,10 +450,15 @@ def main():
     # Train with curriculum
     print("\nStarting curriculum training...")
     trainer.train(
-        total_epochs=10,
+        total_epochs=total_epochs,
         max_length=180,
-        batch_size=1,
-        gradient_accumulation_steps=1
+        batch_size=2,
+        gradient_accumulation_steps=1,
+        learning_rate=2e-5,  # Even lower (was 5e-5)
+        max_grad_norm=2.0,  # Stricter clipping (was 1.0)
+        fp16=True,
+        # dataloader_num_workers=4,
+        gradient_checkpointing=False
     )
     
     # Save final model

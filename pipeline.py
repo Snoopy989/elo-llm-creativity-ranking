@@ -69,20 +69,16 @@ class PipelineRunner:
         """
         command = [sys.executable, script_name]
         
+        print(f"\nRunning: {step_name}...")
+        
         try:
-            result = subprocess.run(
-                command, 
-                cwd=cwd, 
-                stdout=subprocess.PIPE, 
-                stderr=subprocess.PIPE, 
-                text=True
-            )
+            result = subprocess.run(command, cwd=cwd, text=True)
             
             if result.returncode == 0:
+                print(f"SUCCESS: {step_name} completed")
                 return result
             else:
-                print(f"ERROR: {step_name} failed")
-                print(result.stderr)
+                print(f"ERROR: {step_name} failed with exit code {result.returncode}")
                 sys.exit(1)
                 
         except Exception as e:
@@ -108,17 +104,12 @@ class PipelineRunner:
     
     def setup_cuda_environment(self) -> None:
         """Install and verify CUDA PyTorch installation."""
+        print("\nSetting up CUDA environment...")
         if os.path.exists("cuda_install.py"):
             try:
-                result = subprocess.run(
-                    [sys.executable, "cuda_install.py"],
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.PIPE,
-                    text=True
-                )
+                result = subprocess.run([sys.executable, "cuda_install.py"], text=True)
                 if result.returncode != 0:
                     print("WARNING: CUDA installation script encountered issues")
-                    print(result.stderr)
                 else:
                     print("SUCCESS: CUDA installation completed")
             except Exception as e:
@@ -142,12 +133,7 @@ class PipelineRunner:
     
     def _run_cuda_troubleshooting(self) -> None:
         """Execute CUDA troubleshooting script."""
-        subprocess.run(
-            [sys.executable, "cuda_troubleshoot.py"],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True
-        )
+        subprocess.run([sys.executable, "cuda_troubleshoot.py"], text=True)
         
         import importlib
         import torch
@@ -159,17 +145,15 @@ class PipelineRunner:
     
     def install_dependencies(self) -> None:
         """Install required Python packages."""
+        print("\nInstalling dependencies...")
         if os.path.exists("requirements.txt"):
             try:
                 result = subprocess.run(
                     [sys.executable, "-m", "pip", "install", "-r", "requirements.txt"],
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.PIPE,
                     text=True
                 )
                 if result.returncode != 0:
                     print("WARNING: Failed to install requirements")
-                    print(result.stderr)
                 else:
                     print("SUCCESS: Dependencies installed")
             except Exception as e:
@@ -177,12 +161,9 @@ class PipelineRunner:
         else:
             print("WARNING: requirements.txt not found")
         
-        # Install additional packages
         try:
             result = subprocess.run(
                 [sys.executable, "-m", "pip", "install", "tf-keras", "python-dotenv"],
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
                 text=True
             )
             if result.returncode != 0:
