@@ -6,6 +6,15 @@ results/
 *.bin
 *.safetensors
 
+
+
+# Training results and model checkpoints
+sctt_results_*/
+fine_tuned_model_*/
+
+# Alternative: More specific patterns
+sctt_results_curriculum_*_epochs_*/
+
 # Data files
 all_sctt_jrt.csv
 pairs_dataset.csv

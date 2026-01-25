@@ -8,10 +8,7 @@ jupyter>=1.0.0
 ipython>=7.0.0
 
 
-transformers>=4.30.0
-datasets>=2.10.0
-peft>=0.4.0
-accelerate>=0.20.0
+
 python-dotenv>=1.0.0
 evaluate>=0.4.0
 
@@ -19,3 +16,6 @@ evaluate>=0.4.0
 bitsandbytes>=0.41.0
 scipy>=1.10.0
 protobuf==5.28.3
+
+# IMPORTANT: Don't specify torch here - let cuda_install.py handle it
+# cuda_install.py installs the correct CUDA-enabled version

@@ -12,6 +12,13 @@ The easiest way to run the complete pipeline is using the automated script:
 python pipeline.py
 ```
 
+### Add instructions for venv
+deactivate  # Exit the venv first
+rm -rf .venv  # Delete the entire virtual environment
+python3 -m venv .venv  # Create a fresh one
+source .venv/bin/activate  # Activate it
+
+
 This will automatically:
 1. Install all required dependencies
 2. Download raw data

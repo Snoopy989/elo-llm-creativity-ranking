@@ -166,16 +166,47 @@ def check_existing_pytorch():
         return False
 
 
+def verify_cuda_installation():
+    """Verify CUDA is properly installed after installation"""
+    print("\n" + "=" * 70)
+    print("VERIFYING CUDA INSTALLATION")
+    print("=" * 70)
+    
+    try:
+        import torch
+        print(f"✓ PyTorch version: {torch.__version__}")
+        print(f"✓ CUDA available: {torch.cuda.is_available()}")
+        if torch.cuda.is_available():
+            print(f"✓ CUDA version: {torch.version.cuda}")
+            print(f"✓ GPU count: {torch.cuda.device_count()}")
+            print(f"✓ Current GPU: {torch.cuda.get_device_name(0)}")
+            return True
+        else:
+            print("❌ CUDA not available")
+            return False
+    except ImportError:
+        print("❌ PyTorch not installed")
+        return False
+    except Exception as e:
+        print(f"❌ Error: {e}")
+        return False
+
+
 def main():
+    system = platform.system()
+    
     print("=" * 70)
     print("GPU Detection and ML Library Installation Helper")
+    print(f"Platform: {system}")
     print("=" * 70)
     
     # Detection phase
     gpu_exists, gpu_name = check_nvidia_gpu()
     if not gpu_exists:
-        print("\nExiting: No NVIDIA GPU detected")
-        sys.exit(1)
+        print("\nWarning: No NVIDIA GPU detected")
+        if system == "Darwin":  # macOS
+            print("macOS detected - CUDA not supported, use CPU-only or MPS backend")
+        return False
     
     compute_cap = get_compute_capability()
     driver_version = get_cuda_driver_version()
@@ -223,7 +254,15 @@ def main():
             result = subprocess.run(cmd, shell=True)
             if result.returncode != 0:
                 print(f"Command failed with return code {result.returncode}")
-        print("\nInstallation complete!")
+        
+        # Verify installation
+        print("\n" + "=" * 70)
+        if verify_cuda_installation():
+            print("\n✓ SUCCESS: CUDA installation completed")
+            return True
+        else:
+            print("\n❌ WARNING: CUDA not available after installation")
+            return False
         
     elif choice == "2":
         print("\nCopy and run these commands:")
@@ -231,6 +270,7 @@ def main():
         for cmd in install_commands:
             print(cmd)
         print("-" * 70)
+        return True
         
     elif choice == "3":
         script_name = "install_ml_libs.sh"
@@ -242,12 +282,15 @@ def main():
         subprocess.run(f"chmod +x {script_name}", shell=True)
         print(f"\nSaved to {script_name}")
         print(f"Run with: ./{script_name}")
+        return True
         
     else:
         print("\nExiting without installation")
+        return False
     
     print("\n" + "=" * 70)
 
 
 if __name__ == "__main__":
-    main()
+    success = main()
+    sys.exit(0 if success else 1)

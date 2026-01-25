@@ -38,7 +38,7 @@ if hf_token:
     login(token=hf_token, add_to_git_credential=False)
     print("✓ Logged in to Hugging Face")
 else:
-    print("⚠ Warning: No HF_TOKEN found in .env file")
+    print("WARNING: No HF_TOKEN found in .env file")
 
 
 
@@ -313,6 +313,7 @@ class CurriculumTrainer:
             output_dir=phase_output_dir,
             num_train_epochs=epochs_in_phase,
             per_device_train_batch_size=batch_size,
+            per_device_eval_batch_size=batch_size * 2,  # Larger eval batch
             gradient_accumulation_steps=gradient_accumulation_steps,
             gradient_checkpointing=gradient_checkpointing,
             max_grad_norm=max_grad_norm,
@@ -442,7 +443,7 @@ def main():
     model, tokenizer = model_manager.load_model_and_tokenizer()
     
     # Initialize curriculum trainer
-    total_epochs = 1  # Test with 1 epoch
+    total_epochs = 10  # Test with 1 epoch
     experiment_name = f"curriculum_{total_epochs}_epochs"
     trainer = CurriculumTrainer(model, tokenizer, experiment_name=experiment_name)  # ← ADD experi # ← ADD experiment_name
     
@@ -452,7 +453,7 @@ def main():
     trainer.train(
         total_epochs=total_epochs,
         max_length=180,
-        batch_size=2,
+        batch_size=90,
         gradient_accumulation_steps=1,
         learning_rate=2e-5,  # Even lower (was 5e-5)
         max_grad_norm=2.0,  # Stricter clipping (was 1.0)
