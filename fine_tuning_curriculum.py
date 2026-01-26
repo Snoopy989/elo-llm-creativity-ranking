@@ -228,8 +228,9 @@ class CurriculumTrainer:
               learning_rate: float = 2e-5,
               max_grad_norm: float = 0.5,
               fp16: bool = True,
-            #   dataloader_num_workers: int = 2,
-              gradient_checkpointing: bool = True) -> None:
+              dataloader_num_workers: int = 16,
+              gradient_checkpointing: bool = True,
+              prefetch_factor: int = 8) -> None:
         """
         Train model with curriculum learning.
         
@@ -238,6 +239,8 @@ class CurriculumTrainer:
             max_length: Maximum sequence length
             batch_size: Training batch size
             gradient_accumulation_steps: Gradient accumulation steps
+            dataloader_num_workers: CPU workers for data loading
+            prefetch_factor: Batches to prefetch per worker
         """
         # Generate curriculum schedule
         schedule = self._create_curriculum_schedule(total_epochs)
@@ -255,8 +258,9 @@ class CurriculumTrainer:
                 learning_rate,
                 max_grad_norm,
                 fp16,
-                # dataloader_num_workers,
-                gradient_checkpointing
+                dataloader_num_workers,
+                gradient_checkpointing,
+                prefetch_factor
             )
     
     def _create_curriculum_schedule(self, total_epochs: int) -> list:
@@ -294,8 +298,9 @@ class CurriculumTrainer:
                      learning_rate: float,
                      max_grad_norm: float,
                      fp16: bool,
-                    #  dataloader_num_workers: int,
-                     gradient_checkpointing: bool) -> None:
+                     dataloader_num_workers: int,
+                     gradient_checkpointing: bool,
+                     prefetch_factor: int = 8) -> None:
         """Train a single curriculum phase."""
         print("\n" + "="*60)
         print(f"PHASE {phase_idx}: DIFFICULTY LEVEL {curriculum_phase}")
@@ -330,6 +335,10 @@ class CurriculumTrainer:
             greater_is_better=False,
             bf16 = torch.cuda.is_available() and torch.cuda.is_bf16_supported(),
             fp16 = not (torch.cuda.is_available() and torch.cuda.is_bf16_supported()),
+            dataloader_num_workers=dataloader_num_workers,
+            dataloader_prefetch_factor=prefetch_factor,
+            dataloader_pin_memory=True,
+            remove_unused_columns=False,
         )
         
         # Create trainer
@@ -453,13 +462,14 @@ def main():
     trainer.train(
         total_epochs=total_epochs,
         max_length=180,
-        batch_size=90,
+        batch_size=32,
         gradient_accumulation_steps=1,
-        learning_rate=2e-5,  # Even lower (was 5e-5)
-        max_grad_norm=2.0,  # Stricter clipping (was 1.0)
+        learning_rate=2e-5,
+        max_grad_norm=2.0,
         fp16=True,
-        # dataloader_num_workers=4,
-        gradient_checkpointing=False
+        dataloader_num_workers=2,
+        gradient_checkpointing=False,
+        prefetch_factor=2
     )
     
     # Save final model

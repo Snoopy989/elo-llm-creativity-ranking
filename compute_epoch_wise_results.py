@@ -1,72 +1,106 @@
 import os
-os.environ["CUDA_VISIBLE_DEVICES"] = "0"   # set GPU import quant import torch import torch.nn as nn
-import bitsandbytes as bnb
-import evaluate
+os.environ["CUDA_VISIBLE_DEVICES"] = "0"
 import numpy as np
 import pandas as pd
-import sys
 import torch
-torch.cuda.empty_cache()
-from datasets import Dataset, DatasetDict
-from dataprocessing import preprocess_llm_data
-from functools import partial
-from lora_misc import *
-from pynvml import *
-from sklearn.preprocessing import MinMaxScaler
-from transformers import AutoTokenizer, LlamaForSequenceClassification, TrainingArguments, Trainer, LlamaConfig
-from transformers.trainer_pt_utils import get_parameter_names
-from peft import PeftConfig, PeftModel, LoraConfig, get_peft_model, prepare_model_for_kbit_training, AutoPeftModelForSequenceClassification
-from transformers import AutoModelForCausalLM, AutoTokenizer, set_seed, Trainer, TrainingArguments, BitsAndBytesConfig,DataCollatorForLanguageModeling, Trainer, TrainingArguments
+from datasets import Dataset
+from transformers import AutoTokenizer, AutoModelForSequenceClassification, TrainingArguments, Trainer
+from peft import PeftConfig, PeftModel
+from scipy.stats import pearsonr
 
 #  SETTINGS
-np.random.seed(42) # sets a randomization seed for reproducibility
+np.random.seed(42)
+torch.cuda.empty_cache()
 model_name = 'meta-llama/Llama-2-7b-hf'
-checkpoints_dirs = ['sctt_results_LORA_10_epochs_Llama-2-7b-hf',
-                    'sctt_results_LORA_10_epochs_Llama-2-7b-chat-hf']
-config = LlamaConfig(model_name, problem_type = "regression")
-# model_names = ['meta-llama/Llama-2-7b-hf', 'meta-llama/Llama-2-7b-chat-hf']
-epochs = 10
-val_pct = 0.10 # proportion of total dataset allocated to validation
-test_pct = 0.20  # proportion of the dataset to devote to held-out test set
-val_train_pct = (1.0/(1.0-test_pct))*val_pct # we have to get the val set from training subset, so pct needs to be modified
-prefix = "A creative "
-connector1 = " for "
-connector2 = " is " # we'll use prefix/conn to construct inputs to the model
-device = torch.device("cuda:0") if torch.cuda.is_available() else torch.device("cpu")  # setting for whether to use gpu or cpu
-scaler = MinMaxScaler()
-expname = "LORA_{}_epochs".format(epochs)
+checkpoints_dirs = ['sctt_results_curriculum_10_epochs_Llama-2-7b-hf/phase_3']
+device = torch.device("cuda:0") if torch.cuda.is_available() else torch.device("cpu")
+max_length = 180
+
+# Compute metrics function
+def compute_metrics(eval_pred):
+    """Compute evaluation metrics."""
+    logits, labels = eval_pred
+    predictions = np.argmax(logits, axis=-1)
+    
+    # Calculate metrics
+    accuracy = (predictions == labels).mean()
+    
+    # Pearson correlation
+    try:
+        pearson_corr, _ = pearsonr(predictions, labels)
+    except:
+        pearson_corr = 0.0
+    
+    return {
+        'pearson': pearson_corr,
+        'accuracy': accuracy
+    }
+
 test_args = TrainingArguments(
   do_train = False,
   do_predict = True,
-  per_device_eval_batch_size=4,
-  fp16 = True,
-  output_dir='./sctt_results_{}_{}'.format(expname,model_name.split('/')[1]),
+  per_device_eval_batch_size=32,
+  dataloader_num_workers=4,
+  dataloader_pin_memory=True,
+  bf16=torch.cuda.is_available() and torch.cuda.is_bf16_supported(),
+  fp16=not (torch.cuda.is_available() and torch.cuda.is_bf16_supported()),
+  output_dir='./checkpoint_evaluation_results',
 )
 
-#  LOAD & PREPARE DATA
-d = pd.read_csv('all_sctt_jrt.csv')
-gen = pd.read_csv('sctt_item-generalization_jrt.csv')
+#  LOAD DATA
+val_df = pd.read_csv('pairs_val.csv')
+test_df = pd.read_csv('pairs_test.csv')
 
-#  PREPROCESS DATA
-d = preprocess_llm_data(d, gen, val_pct, val_train_pct, test_pct, prefix, connector1, connector2)
 
 # STORAGE LIST
 datadict = []
 
-# LOOP THRU MODELS (foundation/chat)
+# LOOP THRU CHECKPOINTS
 for model_type in checkpoints_dirs:
   checkpoints = os.listdir(model_type)
-  # LOOP THRU CHECKPOINTS WTIHIN MODEL TYPE
+  # LOOP THRU CHECKPOINTS WITHIN MODEL TYPE
   for ind, checkpoint in enumerate(checkpoints):
+    print(f"\nEvaluating checkpoint: {checkpoint}")
     peft_model_id = '{}/{}'.format(model_type, checkpoint)
     config = PeftConfig.from_pretrained(peft_model_id)
-    inference_model = AutoModelForSequenceClassification.from_pretrained(config.base_model_name_or_path, num_labels = 1)
-    tokenizer = AutoTokenizer.from_pretrained(config.base_model_name_or_path)
-    tokenizer.pad_token = tokenizer.eos_token
-    def tokenize_function(examples): #  define wrapper tokenizer function (for batch training)
-      return tokenizer(examples['text'], padding = 'max_length', truncation = True)
-    tokenized_datasets = d.map(tokenize_function, batched = True) # applies wrapper to our dataset
-    eval_dataset = tokenized_datasets['validation']
+    
+    # Load tokenizer FIRST (matching training setup)
+    tokenizer = AutoTokenizer.from_pretrained(config.base_model_name_or_path, use_fast=True)
+    if tokenizer.pad_token is None:
+        tokenizer.add_special_tokens({"pad_token": "[PAD]"})
+    
+    # Load base model
+    inference_model = AutoModelForSequenceClassification.from_pretrained(
+        config.base_model_name_or_path, 
+        num_labels=3,
+        torch_dtype=torch.bfloat16
+    )
+    
+    # Resize token embeddings to match tokenizer (pad token was added during training)
+    inference_model.resize_token_embeddings(len(tokenizer))
+    inference_model.config.pad_token_id = tokenizer.pad_token_id
+    
+    # Create datasets and add text column
+    val_dataset = Dataset.from_pandas(val_df)
+    test_dataset = Dataset.from_pandas(test_df)
+    
+    # Add text column to datasets (matching training format)
+    def add_text_column(example):
+        # Format: task: prompt\nA: response1\nB: response2 (matches fine_tuning_curriculum.py)
+        example['text'] = f"{example['task']}: {example['prompt']}\nA: {example['response1']}\nB: {example['response2']}"
+        return example
+    
+    val_dataset = val_dataset.map(add_text_column)
+    test_dataset = test_dataset.map(add_text_column)
+    
+    # Tokenize datasets
+    def tokenize_function(examples):
+        return tokenizer(examples['text'], padding='max_length', truncation=True, max_length=max_length)
+    
+    val_dataset = val_dataset.map(tokenize_function, batched=True)
+    test_dataset = test_dataset.map(tokenize_function, batched=True)
+    
+    # Load model
     model = PeftModel.from_pretrained(inference_model, peft_model_id)
 
     trainer = Trainer(
@@ -75,20 +109,50 @@ for model_type in checkpoints_dirs:
       compute_metrics=compute_metrics,
       tokenizer=tokenizer,
     )
-    epoch = trainer.state.epoch
+    
+    epoch = trainer.state.epoch if trainer.state.epoch else 0
     steps = trainer.state.global_step
-    prediction = trainer.predict(eval_dataset)
-    predictions_clean = prediction.predictions.flatten()
-    labels_clean = prediction.label_ids.flatten()
-    num_preds = len(predictions_clean)
-    for i in range(num_preds):
-      datadict.append({'peft_model_id': peft_model_id, 'steps': steps, 'epoch': epoch, 'predictions': predictions_clean[i], 'ratings': labels_clean[i]})
+    
+    # Evaluate on validation set
+    print("Evaluating on validation set...")
+    val_prediction = trainer.predict(val_dataset)
+    val_predictions = np.argmax(val_prediction.predictions, axis=-1)
+    val_labels = val_prediction.label_ids
+    
+    for i in range(len(val_predictions)):
+      datadict.append({
+          'peft_model_id': peft_model_id, 
+          'steps': steps, 
+          'epoch': epoch, 
+          'split': 'validation',
+          'predictions': val_predictions[i], 
+          'ratings': val_labels[i]
+      })
+    
+    # Evaluate on test set
+    print("Evaluating on test set...")
+    test_prediction = trainer.predict(test_dataset)
+    test_predictions = np.argmax(test_prediction.predictions, axis=-1)
+    test_labels = test_prediction.label_ids
+    
+    for i in range(len(test_predictions)):
+      datadict.append({
+          'peft_model_id': peft_model_id, 
+          'steps': steps, 
+          'epoch': epoch, 
+          'split': 'test',
+          'predictions': test_predictions[i], 
+          'ratings': test_labels[i]
+      })
+    
     del model
     del tokenizer
     del trainer
-    del tokenized_datasets
-    del eval_dataset
+    del val_dataset
+    del test_dataset
     torch.cuda.empty_cache()
 
 out_df = pd.DataFrame.from_dict(datadict)
-out_df.to_csv('epoch_wise_LORA_results.csv', index = False)
+out_df.to_csv('epoch_wise_curriculum_results.csv', index=False)
+print(f"\nResults saved to epoch_wise_curriculum_results.csv")
+print(f"Total predictions: {len(out_df)}")

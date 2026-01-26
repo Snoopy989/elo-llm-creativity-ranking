@@ -642,7 +642,7 @@ def main():
         cleaned_data,
         val_ratio=0.10,
         test_ratio=0.20,
-        max_samples=50000,  # Set to e.g., 40000 to limit total pairs
+        max_samples=500000,  # Set to e.g., 40000 to limit total pairs
         curriculum_strategy='progressive'
     )
     
