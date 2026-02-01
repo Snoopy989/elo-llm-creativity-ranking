@@ -15,6 +15,7 @@ model_name = 'meta-llama/Llama-2-7b-hf'
 checkpoints_dirs = ['sctt_results_curriculum_10_epochs_Llama-2-7b-hf/phase_3']
 device = torch.device("cuda:0") if torch.cuda.is_available() else torch.device("cpu")
 max_length = 180
+label_map = {"A": 0, "B": 1, "Equal": 2}
 
 # Compute metrics function
 def compute_metrics(eval_pred):
@@ -40,7 +41,7 @@ test_args = TrainingArguments(
   do_train = False,
   do_predict = True,
   per_device_eval_batch_size=32,
-  dataloader_num_workers=4,
+  dataloader_num_workers=0,  # Set to 0 for Windows compatibility
   dataloader_pin_memory=True,
   bf16=torch.cuda.is_available() and torch.cuda.is_bf16_supported(),
   fp16=not (torch.cuda.is_available() and torch.cuda.is_bf16_supported()),
@@ -88,6 +89,9 @@ for model_type in checkpoints_dirs:
     def add_text_column(example):
         # Format: task: prompt\nA: response1\nB: response2 (matches fine_tuning_curriculum.py)
         example['text'] = f"{example['task']}: {example['prompt']}\nA: {example['response1']}\nB: {example['response2']}"
+        # Convert 'winner' to integer label for Trainer compatibility
+        if 'winner' in example:
+            example['label'] = label_map[example['winner']]
         return example
     
     val_dataset = val_dataset.map(add_text_column)
@@ -99,6 +103,12 @@ for model_type in checkpoints_dirs:
     
     val_dataset = val_dataset.map(tokenize_function, batched=True)
     test_dataset = test_dataset.map(tokenize_function, batched=True)
+    
+    # Remove unnecessary columns, keep only model inputs and labels
+    columns_to_keep = ['input_ids', 'attention_mask', 'label']
+    columns_to_remove = [col for col in val_dataset.column_names if col not in columns_to_keep]
+    val_dataset = val_dataset.remove_columns(columns_to_remove)
+    test_dataset = test_dataset.remove_columns(columns_to_remove)
     
     # Load model
     model = PeftModel.from_pretrained(inference_model, peft_model_id)
