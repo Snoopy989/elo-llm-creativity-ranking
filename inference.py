@@ -9,27 +9,27 @@ import numpy as np
 import pandas as pd
 import random
 import time
+import logging
 from scipy.stats import pearsonr
 from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
 
+# Configure logging
+logging.basicConfig(level=logging.INFO, format='%(levelname)s: %(message)s')
+
 def load_model_and_tokenizer(base_model_path="meta-llama/Llama-2-7b-hf", adapter_path="./fine_tuned_model_merged_v6"):
     """Load the fine-tuned model and tokenizer."""
-    print("Loading fine-tuned sequence classification model...")
-    print(f"Base model: {base_model_path}")
-    print(f"Adapter path: {adapter_path}")
+    logging.info(f"Loading model from {adapter_path}")
 
     try:
         # Load tokenizer from adapter path
         tokenizer = AutoTokenizer.from_pretrained(adapter_path, use_fast=True)
         if tokenizer.pad_token is None:
             tokenizer.add_special_tokens({"pad_token": "[PAD]"})
-        print(f"Tokenizer loaded (vocab size: {len(tokenizer)})")
 
         # Load base model as SequenceClassification with 3 labels
-        print("Loading base model...")
         base_model = AutoModelForSequenceClassification.from_pretrained(
             base_model_path,
-            num_labels=3,  # Matches fine-tuning
+            num_labels=3,
             torch_dtype=torch.float16,
             device_map="auto",
             low_cpu_mem_usage=True
@@ -37,29 +37,23 @@ def load_model_and_tokenizer(base_model_path="meta-llama/Llama-2-7b-hf", adapter
 
         # Resize base model to match tokenizer vocab size
         base_model.resize_token_embeddings(len(tokenizer))
-        print(f"Base model loaded")
 
         # Load PEFT adapter
-        print("Loading LoRA adapter...")
         model = PeftModel.from_pretrained(base_model, adapter_path)
-        print(f"LoRA adapter loaded")
 
         # Merge and unload for faster inference
-        print("Merging adapter into base model...")
         model = model.merge_and_unload()
-        print(f"Model merged")
 
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         model.to(device)
         model.eval()
 
-        print(f"\nModel loaded successfully on {device}")
-        print(f"Model type: SequenceClassification with 3 labels (A/B/Equal)")
+        logging.info(f"Model loaded successfully on {device}")
 
         return model, tokenizer, device
 
     except Exception as e:
-        print(f"\nError loading model: {e}")
+        logging.error(f"Error loading model: {e}")
         import traceback
         traceback.print_exc()
         return None, None, None
@@ -211,20 +205,15 @@ def run_llm_elo_ranking(df, model, tokenizer, device, num_pairs=10, max_rounds=N
         else:
             current_k = k
 
-        print(f"\n=== Round {round_num + 1} ===")
-        if adaptive_k:
-            print(f"Using adaptive k: {current_k:.1f}")
+        logging.info(f"Round {round_num + 1}{' (k=' + str(round(current_k, 1)) + ')' if adaptive_k else ''}")
 
         start_time = time.time()
 
         # Generate NEW pairs for each round
-        pairs = random_pairwise_prompts(df, num_pairs=num_pairs, seed=None)  # Fresh randomness each round
-        print(f"Generated {len(pairs)} pairs for round {round_num + 1}")
+        pairs = random_pairwise_prompts(df, num_pairs=num_pairs, seed=None)
 
         changes = 0
         successful_comparisons = 0
-
-        print(f"Starting LLM calls for {len(pairs)} pairs...")
         for pair_idx, pair in enumerate(pairs):
             try:
                 i, j = pair.get("index_a"), pair.get("index_b")
@@ -249,8 +238,7 @@ def run_llm_elo_ranking(df, model, tokenizer, device, num_pairs=10, max_rounds=N
                         winner = response_data.get("winner", "Equal")
                         confidence = response_data.get("confidence", 0.0)
                     else:
-                        print(f"JSON parsing error: {e}")
-                        print(f"Response causing error: {response}")
+                        logging.error(f"JSON parsing error: {e}")
                         continue  # Skip this pair entirely
 
                 # Parse response to scores
@@ -287,19 +275,14 @@ def run_llm_elo_ranking(df, model, tokenizer, device, num_pairs=10, max_rounds=N
                 })
 
             except KeyError as e:
-                print(f"KeyError encountered: {e}")
-                print("Pair data:", pair)
+                logging.error(f"KeyError: {e}")
                 continue
             except Exception as e:
-                print(f"Unexpected error: {e}")
-                print("Pair data:", pair)
+                logging.error(f"Unexpected error: {e}")
                 continue
 
         end_time = time.time()
-        print(f"Round {round_num + 1} LLM processing took {end_time - start_time:.2f} seconds")
-
-        print(f"Round {round_num + 1} completed: {successful_comparisons}/{len(pairs)} successful comparisons")
-        print(f"Total rating changes: {changes:.2f}")
+        logging.info(f"Round {round_num + 1} completed: {successful_comparisons}/{len(pairs)} successful ({end_time - start_time:.1f}s)")
 
         # Calculate and display real-time correlation after each round
         current_corr = None
@@ -325,19 +308,15 @@ def run_llm_elo_ranking(df, model, tokenizer, device, num_pairs=10, max_rounds=N
                         np.array(normalized_elos)[valid_indices]
                     )
                     current_corr = correlation
-                    print(f"Current correlation with ground truth: {correlation:.4f} (p={p_value:.4f})")
+                    logging.info(f"Correlation: {correlation:.4f}")
 
                     # Update best correlation
                     if correlation > best_corr:
                         best_corr = correlation
                         last_improved_round = round_num
-                else:
-                    print("Not enough valid data for correlation calculation")
-            else:
-                print("No ground truth column found for correlation calculation")
 
         except Exception as e:
-            print(f"Error calculating real-time correlation: {e}")
+            logging.warning(f"Could not calculate correlation: {e}")
 
         # Convergence check: if average change per item is small or most changes are <1 or correlation hasn't improved in 10 rounds
         num_items = len(ratings)
@@ -346,7 +325,7 @@ def run_llm_elo_ranking(df, model, tokenizer, device, num_pairs=10, max_rounds=N
         percent_small = small_changes / (2 * successful_comparisons) if successful_comparisons > 0 else 0
 
         if avg_change < 0.1 or percent_small > 0.95 or (round_num - last_improved_round >= 10):
-            print(f"Converged at round {round_num + 1} (avg change: {avg_change:.4f}, % small changes: {percent_small:.2%}, rounds since corr improvement: {round_num - last_improved_round})")
+            logging.info(f"Converged at round {round_num + 1}")
             break
 
         round_num += 1
@@ -378,7 +357,7 @@ def calculate_accuracy(df):
     # Calculate the mean raw deviation
     average_deviation = df["raw_deviation"].mean()
 
-    print(f"Average raw deviation: {average_deviation:.4f}")
+    logging.info(f"Average raw deviation: {average_deviation:.4f}")
     return average_deviation
 
 def calculate_pearson_correlation(df):
@@ -398,15 +377,13 @@ def calculate_pearson_correlation(df):
     clean_df = df[["norm_response", "Elo_normalized"]].dropna()
 
     if len(clean_df) < 2:
-        print("Not enough valid data points for correlation calculation.")
+        logging.warning("Not enough valid data points for correlation calculation.")
         return np.nan
 
     # Calculate Pearson correlation
     correlation, p_value = pearsonr(clean_df["norm_response"], clean_df["Elo_normalized"])
 
-    print(f"Pearson correlation coefficient: {correlation:.4f}")
-    print(f"P-value: {p_value:.4f}")
-    print(f"Number of data points used: {len(clean_df)}")
+    logging.info(f"Pearson correlation: {correlation:.4f} (p={p_value:.4f}, n={len(clean_df)})")
 
     return correlation
 
@@ -451,7 +428,7 @@ def calculate_metrics(df):
     clean_df = df[["norm_response", "Elo_normalized"]].dropna()
 
     if len(clean_df) < 2:
-        print("Not enough valid data points for metrics calculation.")
+        logging.warning("Not enough valid data points for metrics calculation.")
         return {"r_squared": np.nan, "mae": np.nan, "rmse": np.nan}
 
     y_true = clean_df["norm_response"]
@@ -462,10 +439,7 @@ def calculate_metrics(df):
     mae = mean_absolute_error(y_true, y_pred)
     rmse = np.sqrt(mean_squared_error(y_true, y_pred))
 
-    print(f"R² (Coefficient of Determination): {r_squared:.4f}")
-    print(f"MAE (Mean Absolute Error): {mae:.4f}")
-    print(f"RMSE (Root Mean Square Error): {rmse:.4f}")
-    print(f"Number of data points used: {len(clean_df)}")
+    logging.info(f"R²={r_squared:.4f}, MAE={mae:.4f}, RMSE={rmse:.4f} (n={len(clean_df)})")
 
     return {"r_squared": r_squared, "mae": mae, "rmse": rmse}
 
@@ -475,16 +449,10 @@ def main():
     model, tokenizer, device = load_model_and_tokenizer()
 
     if model is None:
-        print("Failed to load model. Exiting.")
+        logging.error("Failed to load model. Exiting.")
         return
 
-    # Example usage: Load test data and run Elo ranking
-    # This would need actual data file paths
-    print("\nModel loaded successfully. Ready for inference.")
-    print("To use:")
-    print("1. Load your test data into a DataFrame with columns: response, task, prompt, item, norm_response")
-    print("2. Call run_llm_elo_ranking(df, model, tokenizer, device, num_pairs=500)")
-    print("3. Use calculate_metrics() and other functions for evaluation")
+
 
 if __name__ == "__main__":
     main()

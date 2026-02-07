@@ -9,7 +9,11 @@ pip install transformers torch huggingface_hub python-dotenv
 """
 
 import os
+import logging
 from pathlib import Path
+
+# Configure logging
+logging.basicConfig(level=logging.INFO, format='%(levelname)s: %(message)s')
 
 def load_token():
     """Load Hugging Face token from .env file or environment variable."""
@@ -47,7 +51,7 @@ def download_llama_2_7b(save_directory="./downloaded_models", auth_token=None):
         save_path = Path(save_directory) / "llama-2-7b"
         save_path.mkdir(parents=True, exist_ok=True)
 
-        print(f"Downloading Llama 2 7B to: {save_path}")
+        logging.info(f"Downloading Llama 2 7B to: {save_path}")
 
         # Download the model
         downloaded_path = snapshot_download(
@@ -57,20 +61,19 @@ def download_llama_2_7b(save_directory="./downloaded_models", auth_token=None):
             use_auth_token=auth_token
         )
 
-        print(f"Model downloaded successfully to: {downloaded_path}")
+        logging.info(f"Model downloaded successfully to: {downloaded_path}")
         return str(save_path)
 
     except Exception as e:
-        print(f"Error downloading model: {e}")
+        logging.error(f"Error downloading model: {e}")
         return None
 
 if __name__ == "__main__":
     token = load_token()
 
     if not token:
-        print("Please set your Hugging Face token:")
-        print("1. Create a .env file in the project directory with: HUGGINGFACE_TOKEN=your_token_here")
-        print("2. Or set environment variable: set HUGGINGFACE_TOKEN=your_token_here")
-        print("Get your token from: https://huggingface.co/settings/tokens")
+        logging.error("Hugging Face token not found")
+        logging.info("Set token via: HUGGINGFACE_TOKEN environment variable or .env file")
+        logging.info("Get token from: https://huggingface.co/settings/tokens")
     else:
         download_llama_2_7b(auth_token=token)

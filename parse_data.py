@@ -6,11 +6,15 @@ import pandas as pd
 import numpy as np
 import hashlib
 import warnings
+import logging
 from pathlib import Path
 from itertools import combinations
 from typing import Optional, Tuple, Dict
 from sklearn.preprocessing import MinMaxScaler
 from sklearn.model_selection import train_test_split
+
+# Configure logging
+logging.basicConfig(level=logging.INFO, format='%(levelname)s: %(message)s')
 
 
 class DataProcessor:
@@ -433,7 +437,7 @@ class StratifiedPairDatasetBuilder:
         print(f"  Val-Test overlap:   {len(val_test_overlap):,}")
         
         if any([train_val_overlap, train_test_overlap, val_test_overlap]):
-            print("  ⚠ Overlap detected - removing pairs with overlapping responses...")
+            logging.warning("Overlap detected - removing pairs with overlapping responses...")
             
             original_val_len = len(val_pairs)
             original_test_len = len(test_pairs)
@@ -472,11 +476,11 @@ class StratifiedPairDatasetBuilder:
             print(f"    Final val-test overlap:   {len(val_test_overlap_final):,}")
             
             if not any([train_val_overlap_final, train_test_overlap_final, val_test_overlap_final]):
-                print("    ✓ No leakage detected after cleanup!")
+                logging.info("No leakage detected after cleanup!")
             else:
-                print("    ⚠ WARNING: Some overlap remains after cleanup!")
+                logging.warning("Some overlap remains after cleanup!")
         else:
-            print("  ✓ No response leakage detected - all clear!")
+            logging.info("No response leakage detected - all clear!")
         
         return train_pairs, val_pairs, test_pairs
     
@@ -609,10 +613,10 @@ class StratifiedPairDatasetBuilder:
         n_test = len(test_df)
         total = n_train + n_val + n_test
         
-        print(f"\n  ✓ Saved {total:,} pairs to pairs_dataset.csv")
-        print(f"  ✓ Train: {n_train:,} ({n_train/total:.1%}) → pairs_train.csv")
-        print(f"  ✓ Val:   {n_val:,} ({n_val/total:.1%}) → pairs_val.csv")
-        print(f"  ✓ Test:  {n_test:,} ({n_test/total:.1%}) → pairs_test.csv")
+        logging.info(f"Saved {total:,} pairs to pairs_dataset.csv")
+        logging.info(f"Train: {n_train:,} ({n_train/total:.1%}) → pairs_train.csv")
+        logging.info(f"Val:   {n_val:,} ({n_val/total:.1%}) → pairs_val.csv")
+        logging.info(f"Test:  {n_test:,} ({n_test/total:.1%}) → pairs_test.csv")
         print(f"\n  Winner distribution: {all_pairs['winner'].value_counts().to_dict()}")
     
     def _print_difficulty_stats(self, pairs_df: pd.DataFrame, split_name: str = '') -> None:

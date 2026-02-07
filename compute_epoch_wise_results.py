@@ -59,8 +59,26 @@ datadict = []
 # LOOP THRU CHECKPOINTS
 for model_type in checkpoints_dirs:
   checkpoints = os.listdir(model_type)
+  
+  # Filter checkpoints in range 30000-40000
+  filtered_checkpoints = []
+  for checkpoint in checkpoints:
+    if checkpoint.startswith('checkpoint-'):
+      try:
+        step_num = int(checkpoint.split('-')[1])
+        if 30000 <= step_num <= 40000:
+          filtered_checkpoints.append(checkpoint)
+      except (ValueError, IndexError):
+        pass  # Skip if not a valid checkpoint format
+  
+  # Sort checkpoints by step number
+  filtered_checkpoints.sort(key=lambda x: int(x.split('-')[1]))
+  
+  print(f"Found {len(filtered_checkpoints)} checkpoints in range 30000-40000")
+  print(f"Checkpoints to evaluate: {filtered_checkpoints}\n")
+  
   # LOOP THRU CHECKPOINTS WITHIN MODEL TYPE
-  for ind, checkpoint in enumerate(checkpoints):
+  for ind, checkpoint in enumerate(filtered_checkpoints):
     print(f"\nEvaluating checkpoint: {checkpoint}")
     peft_model_id = '{}/{}'.format(model_type, checkpoint)
     config = PeftConfig.from_pretrained(peft_model_id)
