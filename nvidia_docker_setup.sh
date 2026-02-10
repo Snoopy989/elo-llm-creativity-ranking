@@ -5,6 +5,31 @@
 # Works on any Linux system with NVIDIA GPU and Docker installed
 #
 
+##########################################################
+# # Make it executable
+# chmod +x nvidia_docker_setup.sh
+
+# # Run the full setup (installs everything)
+# sudo ./nvidia_docker_setup.sh
+
+# After running the setup script:
+# Workspace: /root/nvidia-workspace
+
+# Quick Start:
+#   cd /root/nvidia-workspace
+
+#   # Interactive shell with GPU (This is how we use the container)
+#   ./run-pytorch.sh
+
+#   # Jupyter Lab (access at http://localhost:8888)
+#   ./run-jupyter.sh
+
+#   # Test GPU inside container
+#   ./run-pytorch.sh python test-gpu.py
+
+# Your files in /root/nvidia-workspace will be available at /workspace in the container.
+# #########################################################
+
 set -e
 
 # Colors for output (disabled if not a terminal)

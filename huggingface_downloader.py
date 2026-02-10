@@ -45,20 +45,19 @@ def download_llama_2_7b(save_directory="./downloaded_models", auth_token=None):
         from huggingface_hub import snapshot_download
 
         # Model identifier
-        model_name = "meta-llama/Llama-2-7b-hf"
+        model_name = "meta-llama/Llama-2-13b-chat-hf"
 
         # Create save directory
-        save_path = Path(save_directory) / "llama-2-7b"
+        save_path = Path(save_directory) / "llama-2-13b-chat-hf"
         save_path.mkdir(parents=True, exist_ok=True)
 
-        logging.info(f"Downloading Llama 2 7B to: {save_path}")
+        logging.info(f"Downloading Llama 2 13B Chat to: {save_path}")
 
         # Download the model
         downloaded_path = snapshot_download(
             repo_id=model_name,
             local_dir=str(save_path),
-            local_dir_use_symlinks=False,
-            use_auth_token=auth_token
+            token=auth_token
         )
 
         logging.info(f"Model downloaded successfully to: {downloaded_path}")

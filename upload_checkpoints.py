@@ -1,12 +1,14 @@
 """
-Upload all checkpoints from phase_3 to Hugging Face Hub
-Each checkpoint will be uploaded as a separate revision/branch
+Upload the best checkpoint to Hugging Face Hub
+Based on checkpoint evaluation results, upload checkpoint-32000 (best validation accuracy)
 """
 import os
-import subprocess
 from pathlib import Path
-from huggingface_hub import HfApi, create_repo
+from huggingface_hub import HfApi, create_repo, login
+from dotenv import load_dotenv
 
+# Load environment variables
+load_dotenv()
 
 class Logger:
     """Professional logging utility for upload operations"""
@@ -29,8 +31,9 @@ class Logger:
 
 
 # Configuration
-REPO_NAME = "PhillipGre/llama2-creativity-phase3"
-CHECKPOINT_DIR = Path("sctt_results_curriculum_10_epochs_Llama-2-7b-hf/phase_3")
+REPO_NAME = "PhillipGre/llama2-7b-sctt-classification1"
+CHECKPOINT_DIR = Path("checkpoints")
+BEST_CHECKPOINT = "checkpoint-32000"  # Best validation accuracy: 73.00%
 
 def create_repository():
     """Create the HuggingFace repository if it doesn't exist"""
@@ -44,58 +47,55 @@ def create_repository():
         return False
 
 def upload_checkpoints():
-    """Upload all checkpoint directories to HuggingFace"""
+    """Upload the best checkpoint to HuggingFace"""
     
-    # Get all checkpoint directories
-    checkpoints = sorted([d for d in CHECKPOINT_DIR.iterdir() 
-                         if d.is_dir() and d.name.startswith("checkpoint-")])
+    checkpoint_path = CHECKPOINT_DIR / BEST_CHECKPOINT
     
-    Logger.info(f"Found {len(checkpoints)} checkpoints to upload")
+    if not checkpoint_path.exists():
+        Logger.error(f"Checkpoint directory not found: {checkpoint_path}")
+        return False
     
-    for i, checkpoint_path in enumerate(checkpoints, 1):
-        checkpoint_name = checkpoint_path.name
-        revision_name = checkpoint_name  # Use checkpoint name as revision
+    Logger.info(f"Uploading best checkpoint: {BEST_CHECKPOINT}")
+    Logger.info(f"Validation accuracy: 73.00%, Pearson: 0.434")
+    
+    try:
+        api = HfApi()
+        api.upload_folder(
+            folder_path=str(checkpoint_path),
+            repo_id=REPO_NAME,
+            repo_type="model",
+        )
         
-        print(f"\n[{i}/{len(checkpoints)}] Uploading {checkpoint_name} as revision '{revision_name}'...")
-        
-        try:
-            # Upload command
-            cmd = [
-                "huggingface-cli",
-                "upload",
-                REPO_NAME,
-                str(checkpoint_path),
-                ".",  # Upload to root of repo
-                "--revision", revision_name
-            ]
+        Logger.success(f"Successfully uploaded {BEST_CHECKPOINT}")
+        return True
             
-            # Run without capturing output so you can see live progress
-            result = subprocess.run(cmd)
-            
-            if result.returncode == 0:
-                Logger.success(f"Successfully uploaded {checkpoint_name}")
-            else:
-                Logger.error(f"Failed to upload {checkpoint_name}")
-                
-        except KeyboardInterrupt:
-            Logger.warning("Upload interrupted by user. Stopping...")
-            break
-        except Exception as e:
-            Logger.error(f"Error uploading {checkpoint_name}: {e}")
-    
-    print("\n" + "="*60)
-    Logger.info("Upload complete! All checkpoints are at:")
-    print(f"https://huggingface.co/{REPO_NAME}")
-    print("\nTo download a specific checkpoint on Lambda:")
-    print(f"huggingface-cli download {REPO_NAME} --revision checkpoint-XXXX --local-dir ./model")
+    except KeyboardInterrupt:
+        Logger.warning("Upload interrupted by user")
+        return False
+    except Exception as e:
+        Logger.error(f"Error uploading {BEST_CHECKPOINT}: {e}")
+        return False
 
 if __name__ == "__main__":
-    print("HuggingFace Checkpoint Uploader")
+    print("HuggingFace Best Checkpoint Uploader")
     print("="*60)
     print(f"Repository: {REPO_NAME}")
-    print(f"Source directory: {CHECKPOINT_DIR}")
-    print("\nMake sure you've logged in with: huggingface-cli login")
+    print(f"Checkpoint: {BEST_CHECKPOINT}")
+    print(f"Source: {CHECKPOINT_DIR / BEST_CHECKPOINT}")
     print("="*60)
+    
+    # Login to HuggingFace using token from .env
+    token = os.getenv('HUGGINGFACE_TOKEN')
+    if not token:
+        Logger.error("HUGGINGFACE_TOKEN not found in .env file")
+        exit(1)
+    
+    try:
+        login(token=token)
+        Logger.success("Logged in to HuggingFace")
+    except Exception as e:
+        Logger.error(f"Failed to login: {e}")
+        exit(1)
     
     response = input("\nProceed with upload? (y/n): ")
     if response.lower() == 'y':
@@ -104,8 +104,18 @@ if __name__ == "__main__":
             Logger.error("Failed to create repository. Exiting.")
             exit(1)
         
-        Logger.info("Starting checkpoint uploads...")
+        Logger.info("Starting upload...")
         print()
-        upload_checkpoints()
+        if upload_checkpoints():
+            print("\n" + "="*60)
+            Logger.success("Upload complete!")
+            print(f"Model available at: https://huggingface.co/{REPO_NAME}")
+            print("\nTo use this model:")
+            print(f"  from peft import PeftModel, PeftConfig")
+            print(f"  config = PeftConfig.from_pretrained('{REPO_NAME}')")
+            print(f"  model = PeftModel.from_pretrained(base_model, '{REPO_NAME}')")
+        else:
+            Logger.error("Upload failed")
+            exit(1)
     else:
         Logger.info("Upload cancelled")

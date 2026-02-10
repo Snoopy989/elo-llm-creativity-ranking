@@ -14,6 +14,9 @@ import sys
 import warnings
 warnings.filterwarnings('ignore')
 
+# Set CUDA memory allocation config for better memory management
+os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
+
 import torch
 from transformers import AutoTokenizer, AutoModelForSequenceClassification, TrainingArguments, Trainer
 from datasets import Dataset, DatasetDict
@@ -347,7 +350,6 @@ class CurriculumTrainer:
             args=training_args,
             train_dataset=dataset["train"],
             eval_dataset=dataset["validation"],
-            tokenizer=self.tokenizer,
             compute_metrics=self.compute_metrics,
         )
         
@@ -360,7 +362,7 @@ class CurriculumTrainer:
 class ModelManager:
     """Manages model loading, configuration, and saving."""
     
-    def __init__(self, base_model: str = "meta-llama/Llama-2-7b-hf"):
+    def __init__(self, base_model: str = "meta-llama/Llama-2-13b-hf"):
         """
         Initialize model manager.
         
@@ -380,18 +382,23 @@ class ModelManager:
         """Load and configure model and tokenizer."""
         print("\nLoading model and tokenizer...")
         
+        # Clear GPU cache before loading
+        torch.cuda.empty_cache()
+        
         # Load tokenizer
         tokenizer = AutoTokenizer.from_pretrained(self.base_model, use_fast=True)
         if tokenizer.pad_token is None:
             tokenizer.add_special_tokens({"pad_token": "[PAD]"})
         
-        # Load model
+        # Load model with automatic device mapping for 13B model
+        print("Loading 13B model with automatic device management...")
         model = AutoModelForSequenceClassification.from_pretrained(
             self.base_model,
             num_labels=3,
-            torch_dtype=torch.bfloat16
+            torch_dtype=torch.bfloat16,
+            device_map="auto",  # Automatically distribute across GPU/CPU
+            low_cpu_mem_usage=True  # Efficient loading
         )
-        model.to(self.device)
         
         # Resize embeddings if needed
         try:
@@ -448,7 +455,7 @@ def main():
     print("="*60)
     
     # Initialize model manager
-    model_manager = ModelManager(base_model="meta-llama/Llama-2-7b-hf")
+    model_manager = ModelManager(base_model="meta-llama/Llama-2-13b-hf")
     model, tokenizer = model_manager.load_model_and_tokenizer()
     
     # Initialize curriculum trainer
@@ -462,13 +469,13 @@ def main():
     trainer.train(
         total_epochs=total_epochs,
         max_length=180,
-        batch_size=32,
-        gradient_accumulation_steps=1,
+        batch_size=8,  # Reduced from 32 for larger 13B model
+        gradient_accumulation_steps=2,  # Increased to maintain effective batch size
         learning_rate=2e-5,
         max_grad_norm=2.0,
         fp16=True,
         dataloader_num_workers=2,
-        gradient_checkpointing=False,
+        gradient_checkpointing=True,  # Enable for 13B to save memory
         prefetch_factor=2
     )
     

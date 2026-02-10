@@ -1,5 +1,6 @@
 import os
 os.environ["CUDA_VISIBLE_DEVICES"] = "0"
+os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
 import numpy as np
 import pandas as pd
 import torch
@@ -12,7 +13,7 @@ from scipy.stats import pearsonr
 np.random.seed(42)
 torch.cuda.empty_cache()
 model_name = 'meta-llama/Llama-2-7b-hf'
-checkpoints_dirs = ['sctt_results_curriculum_10_epochs_Llama-2-7b-hf/phase_3']
+checkpoints_dirs = ['checkpoints']
 device = torch.device("cuda:0") if torch.cuda.is_available() else torch.device("cpu")
 max_length = 180
 label_map = {"A": 0, "B": 1, "Equal": 2}
@@ -40,7 +41,7 @@ def compute_metrics(eval_pred):
 test_args = TrainingArguments(
   do_train = False,
   do_predict = True,
-  per_device_eval_batch_size=32,
+  per_device_eval_batch_size=2,  # Reduced from 32 to save memory
   dataloader_num_workers=0,  # Set to 0 for Windows compatibility
   dataloader_pin_memory=True,
   bf16=torch.cuda.is_available() and torch.cuda.is_bf16_supported(),
@@ -60,13 +61,13 @@ datadict = []
 for model_type in checkpoints_dirs:
   checkpoints = os.listdir(model_type)
   
-  # Filter checkpoints in range 30000-40000
+  # Filter checkpoints in range 30000-43752
   filtered_checkpoints = []
   for checkpoint in checkpoints:
     if checkpoint.startswith('checkpoint-'):
       try:
         step_num = int(checkpoint.split('-')[1])
-        if 30000 <= step_num <= 40000:
+        if 30000 <= step_num <= 43752:
           filtered_checkpoints.append(checkpoint)
       except (ValueError, IndexError):
         pass  # Skip if not a valid checkpoint format
@@ -74,7 +75,7 @@ for model_type in checkpoints_dirs:
   # Sort checkpoints by step number
   filtered_checkpoints.sort(key=lambda x: int(x.split('-')[1]))
   
-  print(f"Found {len(filtered_checkpoints)} checkpoints in range 30000-40000")
+  print(f"Found {len(filtered_checkpoints)} checkpoints in range 30000-43752")
   print(f"Checkpoints to evaluate: {filtered_checkpoints}\n")
   
   # LOOP THRU CHECKPOINTS WITHIN MODEL TYPE
@@ -88,11 +89,12 @@ for model_type in checkpoints_dirs:
     if tokenizer.pad_token is None:
         tokenizer.add_special_tokens({"pad_token": "[PAD]"})
     
-    # Load base model
+    # Load base model with memory optimizations
     inference_model = AutoModelForSequenceClassification.from_pretrained(
         config.base_model_name_or_path, 
         num_labels=3,
-        torch_dtype=torch.bfloat16
+        torch_dtype=torch.bfloat16,
+        low_cpu_mem_usage=True
     )
     
     # Resize token embeddings to match tokenizer (pad token was added during training)
@@ -146,6 +148,8 @@ for model_type in checkpoints_dirs:
     val_prediction = trainer.predict(val_dataset)
     val_predictions = np.argmax(val_prediction.predictions, axis=-1)
     val_labels = val_prediction.label_ids
+    val_accuracy = val_prediction.metrics.get('test_accuracy', 0.0)
+    val_pearson = val_prediction.metrics.get('test_pearson', 0.0)
     
     for i in range(len(val_predictions)):
       datadict.append({
@@ -154,7 +158,9 @@ for model_type in checkpoints_dirs:
           'epoch': epoch, 
           'split': 'validation',
           'predictions': val_predictions[i], 
-          'ratings': val_labels[i]
+          'ratings': val_labels[i],
+          'accuracy': val_accuracy,
+          'pearson': val_pearson
       })
     
     # Evaluate on test set
@@ -162,6 +168,8 @@ for model_type in checkpoints_dirs:
     test_prediction = trainer.predict(test_dataset)
     test_predictions = np.argmax(test_prediction.predictions, axis=-1)
     test_labels = test_prediction.label_ids
+    test_accuracy = test_prediction.metrics.get('test_accuracy', 0.0)
+    test_pearson = test_prediction.metrics.get('test_pearson', 0.0)
     
     for i in range(len(test_predictions)):
       datadict.append({
@@ -170,8 +178,15 @@ for model_type in checkpoints_dirs:
           'epoch': epoch, 
           'split': 'test',
           'predictions': test_predictions[i], 
-          'ratings': test_labels[i]
+          'ratings': test_labels[i],
+          'accuracy': test_accuracy,
+          'pearson': test_pearson
       })
+    
+    # Save results after each checkpoint
+    out_df = pd.DataFrame.from_dict(datadict)
+    out_df.to_csv('epoch_wise_curriculum_results.csv', index=False)
+    print(f"Results saved to epoch_wise_curriculum_results.csv (Total predictions: {len(out_df)})\n")
     
     del model
     del tokenizer
@@ -180,7 +195,5 @@ for model_type in checkpoints_dirs:
     del test_dataset
     torch.cuda.empty_cache()
 
-out_df = pd.DataFrame.from_dict(datadict)
-out_df.to_csv('epoch_wise_curriculum_results.csv', index=False)
-print(f"\nResults saved to epoch_wise_curriculum_results.csv")
-print(f"Total predictions: {len(out_df)}")
+print(f"\nAll checkpoints evaluated successfully!")
+print(f"Final results in epoch_wise_curriculum_results.csv with {len(datadict)} total predictions")
