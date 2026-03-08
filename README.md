@@ -2,7 +2,7 @@
 
 ![Python](https://img.shields.io/badge/python-3.12+-blue)
 
-This directory contains clean, production-ready Python scripts for fine-tuning Llama 2 models and running inference for Elo ranking of responses.
+THIS WORK IS IN PROGRESSS AND MAY NOT BE STABLE; WORK WILL COMPLETE MAY-2026
 
 ## Quick Start with Pipeline
 
