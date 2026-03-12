@@ -179,7 +179,7 @@ class CurriculumDatasetBuilder:
         tokenized = self.tokenizer(
             texts,
             truncation=True,
-            padding=True,
+            padding="max_length",
             max_length=self.max_length,
             return_tensors="pt" if len(texts) == 1 else None
         )
@@ -329,10 +329,10 @@ class CurriculumTrainer:
             warmup_steps=1000,
             # weight_decay=0.01, # Disabled weight decay to align with original settings
             logging_steps=10,
-            eval_steps=1000,
+            eval_steps=20000,
             eval_strategy="steps",
             save_strategy="steps",
-            save_steps=1000,
+            save_steps=20000,
             load_best_model_at_end=True,
             metric_for_best_model="eval_loss",
             greater_is_better=False,

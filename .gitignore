@@ -98,4 +98,4 @@ logs/
 
 # PyTorch
 lightning_logs/
-wandb/
+wandb/*.parquet

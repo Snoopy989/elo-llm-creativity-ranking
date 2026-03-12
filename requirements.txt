@@ -16,6 +16,7 @@ evaluate>=0.4.0
 bitsandbytes>=0.41.0
 scipy>=1.10.0
 protobuf==5.28.3
+pyarrow>=14.0.0
 
 # IMPORTANT: Don't specify torch here - let cuda_install.py handle it
 # cuda_install.py installs the correct CUDA-enabled version
