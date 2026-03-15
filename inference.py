@@ -19,6 +19,72 @@ from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(levelname)s: %(message)s')
 
+def _fix_score_head(model, adapter_path):
+    """
+    Reconstruct the classification head (score layer) from the adapter checkpoint.
+
+    The checkpoint stores score as a LoraLinear inside ModulesToSaveWrapper
+    (base_layer + lora_A/B), but PEFT ≥ 0.8 re-creates it as a plain Linear
+    inside ModulesToSaveWrapper when loading.  The LoRA-specific keys silently
+    fail to map, leaving the score layer randomly initialised.
+
+    Fix: manually compute  effective_weight = base_layer + (B @ A) * (α/r)
+    from the safetensors file and inject it into the loaded model.
+    """
+    from safetensors import safe_open
+    import os, json
+
+    safetensors_path = os.path.join(adapter_path, "adapter_model.safetensors")
+    config_path = os.path.join(adapter_path, "adapter_config.json")
+    if not os.path.exists(safetensors_path):
+        logging.warning("No adapter_model.safetensors found — skipping score-head fix.")
+        return
+
+    with open(config_path) as f:
+        cfg = json.load(f)
+    lora_alpha = cfg.get("lora_alpha", 32)
+    lora_r = cfg.get("r", 4)
+    scaling = lora_alpha / lora_r
+
+    with safe_open(safetensors_path, framework="pt") as sf:
+        keys = list(sf.keys())
+
+        # Locate score weights in the checkpoint
+        base_key = "base_model.model.score.base_layer.weight"
+        lora_a_key = "base_model.model.score.modules_to_save.lora_A.weight"
+        lora_b_key = "base_model.model.score.modules_to_save.lora_B.weight"
+
+        # Fall back to top-level lora keys if modules_to_save variants missing
+        if lora_a_key not in keys:
+            lora_a_key = "base_model.model.score.lora_A.weight"
+        if lora_b_key not in keys:
+            lora_b_key = "base_model.model.score.lora_B.weight"
+
+        if base_key not in keys:
+            logging.warning("score.base_layer.weight not in checkpoint — skipping fix.")
+            return
+
+        base_w = sf.get_tensor(base_key).float()
+        lora_A = sf.get_tensor(lora_a_key).float()
+        lora_B = sf.get_tensor(lora_b_key).float()
+
+    effective_w = base_w + (lora_B @ lora_A) * scaling
+
+    # Inject into the loaded PeftModel's score layer
+    score = model.base_model.model.score
+    if hasattr(score, "modules_to_save"):
+        # ModulesToSaveWrapper path
+        active = list(score.modules_to_save.keys())[0]
+        target = score.modules_to_save[active]
+        target.weight.data.copy_(effective_w.to(target.weight.dtype))
+        logging.info(f"Score head fixed via ModulesToSaveWrapper (effective_w std={effective_w.std():.4f})")
+    elif hasattr(score, "weight"):
+        score.weight.data.copy_(effective_w.to(score.weight.dtype))
+        logging.info(f"Score head fixed via direct weight injection (effective_w std={effective_w.std():.4f})")
+    else:
+        logging.warning("Could not locate score weight tensor to fix.")
+
+
 def load_model_and_tokenizer(
     base_model_path="meta-llama/Llama-2-13b-hf",
     adapter_path="sctt_results_curriculum_10_epochs_Llama-2-13b-hf/phase_3/checkpoint-540000",
@@ -45,9 +111,15 @@ def load_model_and_tokenizer(
         base_model.resize_token_embeddings(len(tokenizer))
         base_model.config.pad_token_id = tokenizer.pad_token_id
 
-        # Load PEFT adapter and merge
+        # Load PEFT adapter (do NOT merge_and_unload — the score/classifier
+        # head is in both target_modules and modules_to_save, so merging
+        # corrupts the classification head weights)
         model = PeftModel.from_pretrained(base_model, adapter_path)
-        model = model.merge_and_unload()
+
+        # Fix score head: PEFT silently drops LoRA weights for the score layer
+        # when it's in both target_modules and modules_to_save.  Reconstruct
+        # the effective weight manually from the checkpoint.
+        _fix_score_head(model, adapter_path)
 
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         model.to(device)
@@ -87,11 +159,11 @@ def ask_llama(prompt, model, tokenizer, device, max_tokens=128, temperature=0.1,
         return '{"winner": "Equal", "error": "Model not loaded"}'
 
     try:
-        # Tokenize input
+        # Tokenize input — padding="max_length" to match training tokenization
         inputs = tokenizer(
             prompt,
             truncation=True,
-            padding=True,
+            padding="max_length",
             max_length=180,
             return_tensors="pt"
         )
@@ -103,8 +175,8 @@ def ask_llama(prompt, model, tokenizer, device, max_tokens=128, temperature=0.1,
         with torch.no_grad():
             logits = model(**inputs).logits
 
-        # Convert logits to probabilities
-        probs = torch.softmax(logits, dim=-1).squeeze()
+        # Convert logits to probabilities (cast to float32 for stable softmax)
+        probs = torch.softmax(logits.float(), dim=-1).squeeze()
 
         # Map to labels: 0=A, 1=B, 2=Equal
         label_map = {0: "A", 1: "B", 2: "Equal"}
@@ -125,6 +197,53 @@ def ask_llama(prompt, model, tokenizer, device, max_tokens=128, temperature=0.1,
         if debug:
             print(f"DEBUG - Error in ask_llama: {e}")
         return json.dumps(error_response)
+
+def ask_llama_batch(prompts, model, tokenizer, device):
+    """
+    Classify a batch of prompts in a single forward pass.
+
+    Args:
+        prompts: list of prompt strings
+        model, tokenizer, device: as usual
+
+    Returns:
+        list of dicts: [{"winner": str, "confidence": float}, ...]
+    """
+    LABEL_MAP = {0: "A", 1: "B", 2: "Equal"}
+    fallback = {"winner": "Equal", "confidence": 0.0}
+
+    if model is None or tokenizer is None or len(prompts) == 0:
+        return [fallback.copy() for _ in prompts]
+
+    try:
+        inputs = tokenizer(
+            prompts,
+            truncation=True,
+            padding="max_length",
+            max_length=180,
+            return_tensors="pt",
+        )
+        inputs = {k: v.to(device) for k, v in inputs.items()}
+
+        with torch.no_grad():
+            logits = model(**inputs).logits          # (batch, 3)
+
+        probs = torch.softmax(logits.float(), dim=-1)  # (batch, 3)
+        preds = torch.argmax(logits, dim=-1)            # (batch,)
+
+        results = []
+        for idx in range(len(prompts)):
+            cls = preds[idx].item()
+            results.append({
+                "winner":     LABEL_MAP[cls],
+                "confidence": round(probs[idx, cls].item(), 3),
+            })
+        return results
+
+    except Exception as e:
+        logging.error(f"Batch inference error: {e}")
+        return [fallback.copy() for _ in prompts]
+
 
 def build_comparison_prompt(row_a, row_b):
     """
@@ -457,17 +576,19 @@ def calculate_metrics(df):
     return {"r_squared": r_squared, "mae": mae, "rmse": rmse}
 
 def main():
-    """Main function: load model, run ELO convergence loop on items from pairs_test.csv."""
+    """Main function: load model, run ELO convergence loop on items from inference_pairs_val_pairs.csv."""
     import argparse
 
-    parser = argparse.ArgumentParser(description="Run ELO ranking with convergence loop on pairs_test.csv")
-    parser.add_argument("--data-path", type=str, default="pairs_test.csv", help="Path to pairwise CSV")
+    parser = argparse.ArgumentParser(description="Run ELO ranking with convergence loop on inference_pairs_val_pairs.csv")
+    parser.add_argument("--data-path", type=str, default="inference_pairs_val_pairs.csv", help="Path to pairwise CSV")
     parser.add_argument("--base-model-path", type=str, default="meta-llama/Llama-2-13b-hf")
     parser.add_argument("--adapter-path", type=str, default="sctt_results_curriculum_10_epochs_Llama-2-13b-hf/phase_3/checkpoint-540000")
     parser.add_argument("--tokenizer-path", type=str, default="meta-llama/Llama-2-13b-hf")
     parser.add_argument("--num-pairs", type=int, default=10000, help="Random pairs sampled per ELO round")
     parser.add_argument("--max-rounds", type=int, default=None, help="Max ELO rounds (None = run until convergence)")
     parser.add_argument("--convergence-patience", type=int, default=20, help="Stop if correlation does not improve for this many rounds")
+    parser.add_argument("--k-start", type=int, default=32, help="Initial K factor for adaptive ELO decay")
+    parser.add_argument("--k-end", type=int, default=2, help="Final K factor for adaptive ELO decay")
     parser.add_argument("--item", type=str, default=None, help="Filter to a specific item (e.g. 'birds')")
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--output-csv", type=str, default=None, help="Save final results to CSV")
@@ -542,6 +663,8 @@ def main():
         max_rounds=args.max_rounds,
         seed=args.seed,
         convergence_patience=args.convergence_patience,
+        k_start=args.k_start,
+        k_end=args.k_end,
         exhaustive_pairs=exhaustive_pairs,
     )
 

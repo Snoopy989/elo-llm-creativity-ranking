@@ -2,6 +2,7 @@
 # coding: utf-8
 
 import os
+import joblib
 import pandas as pd
 import numpy as np
 import hashlib
@@ -16,6 +17,8 @@ from sklearn.model_selection import train_test_split
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(levelname)s: %(message)s')
 
+SCALER_PATH = "minmax_scaler.joblib"
+
 
 class DataProcessor:
     """Process and prepare LLM creativity ranking data."""
@@ -24,7 +27,27 @@ class DataProcessor:
                  holdout_file: str = "sctt_item-generalization_jrt.csv"):
         self.input_file = input_file
         self.holdout_file = holdout_file
-        self.scaler = MinMaxScaler()
+        self.scaler = self._load_or_create_scaler()
+
+    def _load_or_create_scaler(self) -> MinMaxScaler:
+        """Load scaler from disk if it exists, otherwise try to bootstrap from data_cleaned.csv."""
+        if os.path.exists(SCALER_PATH):
+            logging.info(f"Loaded existing scaler from {SCALER_PATH}")
+            return joblib.load(SCALER_PATH)
+        if os.path.exists("data_cleaned.csv"):
+            logging.info("No saved scaler found — bootstrapping from data_cleaned.csv")
+            return self._bootstrap_scaler_from_cleaned()
+        logging.info("No existing scaler found — a new one will be fit on main data.")
+        return MinMaxScaler()
+
+    def _bootstrap_scaler_from_cleaned(self, cleaned_path: str = "data_cleaned.csv") -> MinMaxScaler:
+        """Fit and save a scaler from an existing data_cleaned.csv."""
+        df = pd.read_csv(cleaned_path, usecols=["jrt"])
+        scaler = MinMaxScaler()
+        scaler.fit(df["jrt"].to_numpy().reshape(-1, 1))
+        joblib.dump(scaler, SCALER_PATH)
+        logging.info(f"Bootstrapped scaler from {cleaned_path} and saved to {SCALER_PATH}")
+        return scaler
         
     def load_and_clean(self, prefix: str = '', 
                        connector1: str = ': ', 
@@ -44,6 +67,10 @@ class DataProcessor:
         # Normalize JRT to label
         df['jrt'] = df['jrt'] + abs(df['jrt'].min())
         df['label'] = self.scaler.fit_transform(df['jrt'].to_numpy().reshape(-1, 1))
+        
+        # Save scaler for future use (holdout, inference, etc.)
+        joblib.dump(self.scaler, SCALER_PATH)
+        logging.info(f"Saved scaler to {SCALER_PATH}")
         
         # Select columns
         df = df[['ID', 'item', 'task', 'prompt', 'response', 'jrt', 'text', 'label']]
@@ -89,19 +116,46 @@ class DataProcessor:
         gen = pd.read_csv(self.holdout_file)
         print(f"Loaded {len(gen):,} rows from {self.holdout_file}")
         
-        gen['text'] = prefix + gen['task'] + connector1 + gen['prompt'] + connector2 + gen['response'].str.lower()
-        gen['text'] = gen['text'].astype(str)
+        # Build text only if task column exists and text isn't already present
+        if 'task' in gen.columns:
+            gen['text'] = prefix + gen['task'] + connector1 + gen['prompt'] + connector2 + gen['response'].str.lower()
+            gen['text'] = gen['text'].astype(str)
+        elif 'text' not in gen.columns:
+            gen['text'] = prefix + gen['prompt'] + connector2 + gen['response'].str.lower()
+            gen['text'] = gen['text'].astype(str)
+        else:
+            logging.info("'text' column already present — skipping text construction")
         
-        scaler_gen = MinMaxScaler()
-        gen['jrt'] = gen['jrt'] + abs(gen['jrt'].min())
-        gen['label'] = scaler_gen.fit_transform(gen['jrt'].to_numpy().reshape(-1, 1))
+        # Re-normalize jrt with shared scaler if jrt column exists, otherwise keep existing label
+        if 'jrt' in gen.columns:
+            gen['jrt'] = gen['jrt'] + abs(gen['jrt'].min())
+            gen['label'] = self.scaler.transform(gen['jrt'].to_numpy().reshape(-1, 1))
+        else:
+            logging.info("No 'jrt' column found — keeping existing 'label' values")
         
-        gen['ID'] = gen['study_id'].astype(str) + '-' + gen['response_id'].astype(str)
-        gen = gen[['ID', 'item', 'task', 'prompt', 'response', 'text', 'label']]
+        if 'ID' not in gen.columns:
+            gen['ID'] = gen['study_id'].astype(str) + '-' + gen['response_id'].astype(str)
+        
+        keep_cols = [c for c in ['ID', 'item', 'task', 'prompt', 'response', 'text', 'label'] if c in gen.columns]
+        gen = gen[keep_cols]
         gen = gen.dropna()
         
         gen.to_csv('holdout_generalization_cleaned.csv', index=False)
         print(f"Saved {len(gen):,} holdout rows to holdout_generalization_cleaned.csv")
+        
+        # Generate pairs from holdout cleaned data
+        # Add a placeholder task column if missing (required by pair builder)
+        gen_pairs = gen.copy()
+        if 'task' not in gen_pairs.columns:
+            gen_pairs['task'] = 'holdout'
+        
+        builder = StratifiedPairDatasetBuilder(random_seed=42)
+        holdout_pairs = builder._generate_all_pairs(gen_pairs)
+        holdout_pairs = builder._add_difficulty_scores(holdout_pairs)
+        holdout_pairs['split'] = 'holdout'
+        
+        holdout_pairs.to_csv('pairs_holdout.csv', index=False)
+        print(f"Saved {len(holdout_pairs):,} holdout pairs to pairs_holdout.csv")
 
 
 class StratifiedPairDatasetBuilder:
