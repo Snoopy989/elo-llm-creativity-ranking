@@ -303,7 +303,7 @@ def elo_update(rating_a, rating_b, score_a, score_b, k=6):
     new_rating_b = rating_b + k * (score_b - expected_b)
     return new_rating_a, new_rating_b
 
-def run_llm_elo_ranking(df, model, tokenizer, device, num_pairs=None, max_rounds=None, k=6, seed=None, adaptive_k=True, k_start=32, k_end=2, convergence_patience=20, exhaustive_pairs=None):
+def run_llm_elo_ranking(df, model, tokenizer, device, num_pairs=None, max_rounds=None, k=6, seed=None, adaptive_k=True, k_start=32, k_end=2, convergence_patience=20, exhaustive_pairs=None, min_r_delta=0.01, min_r_delta_rounds=100):
     """
     Main ELO convergence loop.
     If exhaustive_pairs is provided (list of pair dicts), each round shuffles and iterates
@@ -311,6 +311,8 @@ def run_llm_elo_ranking(df, model, tokenizer, device, num_pairs=None, max_rounds
     Otherwise, num_pairs random pairs are sampled each round.
     If max_rounds is None, runs until convergence.
     convergence_patience: stop if correlation does not improve for this many rounds.
+    min_r_delta: minimum Pearson r improvement required over min_r_delta_rounds.
+    min_r_delta_rounds: window of rounds to check for min_r_delta improvement.
     Returns a tuple: (final Elo ratings dict, history list of dicts)
     """
     # Initialize Elo ratings
@@ -320,6 +322,8 @@ def run_llm_elo_ranking(df, model, tokenizer, device, num_pairs=None, max_rounds
     # For correlation patience
     best_corr = float('-inf')
     last_improved_round = 0
+    # For min-delta convergence: track r at each round
+    corr_history = []
 
     round_num = 0
     while max_rounds is None or round_num < max_rounds:
@@ -439,6 +443,7 @@ def run_llm_elo_ranking(df, model, tokenizer, device, num_pairs=None, max_rounds
                     if correlation > best_corr:
                         best_corr = correlation
                         last_improved_round = round_num
+                    corr_history.append(correlation)
         except Exception as e:
             logging.warning(f"Corr error: {e}")
 
@@ -456,8 +461,21 @@ def run_llm_elo_ranking(df, model, tokenizer, device, num_pairs=None, max_rounds
         small_changes = sum(1 for entry in history[-successful_comparisons:] if abs(entry['new_a'] - entry['old_a']) < 1 and abs(entry['new_b'] - entry['old_b']) < 1)
         percent_small = small_changes / (2 * successful_comparisons) if successful_comparisons > 0 else 0
 
-        if avg_change < 0.1 or percent_small > 0.95 or (round_num - last_improved_round >= convergence_patience):
-            logging.info(f"Converged at R{round_num + 1}")
+        # Criterion 4: r hasn't improved by min_r_delta over the last min_r_delta_rounds
+        r_stagnant = False
+        if len(corr_history) >= min_r_delta_rounds:
+            r_old = corr_history[-min_r_delta_rounds]
+            r_now = corr_history[-1]
+            if (r_now - r_old) < min_r_delta:
+                r_stagnant = True
+
+        if avg_change < 0.1 or percent_small > 0.95 or (round_num - last_improved_round >= convergence_patience) or r_stagnant:
+            reason = []
+            if avg_change < 0.1: reason.append("avg_change<0.1")
+            if percent_small > 0.95: reason.append("95%_small")
+            if round_num - last_improved_round >= convergence_patience: reason.append(f"patience_{convergence_patience}")
+            if r_stagnant: reason.append(f"r_delta<{min_r_delta}_in_{min_r_delta_rounds}r")
+            logging.info(f"Converged at R{round_num + 1} ({', '.join(reason)})")
             break
 
         round_num += 1
@@ -587,6 +605,8 @@ def main():
     parser.add_argument("--num-pairs", type=int, default=10000, help="Random pairs sampled per ELO round")
     parser.add_argument("--max-rounds", type=int, default=None, help="Max ELO rounds (None = run until convergence)")
     parser.add_argument("--convergence-patience", type=int, default=20, help="Stop if correlation does not improve for this many rounds")
+    parser.add_argument("--min-r-delta", type=float, default=0.01, help="Min Pearson r improvement required over --min-r-delta-rounds")
+    parser.add_argument("--min-r-delta-rounds", type=int, default=100, help="Window of rounds to check for --min-r-delta improvement")
     parser.add_argument("--k-start", type=int, default=32, help="Initial K factor for adaptive ELO decay")
     parser.add_argument("--k-end", type=int, default=2, help="Final K factor for adaptive ELO decay")
     parser.add_argument("--item", type=str, default=None, help="Filter to a specific item (e.g. 'birds')")
@@ -663,6 +683,8 @@ def main():
         max_rounds=args.max_rounds,
         seed=args.seed,
         convergence_patience=args.convergence_patience,
+        min_r_delta=args.min_r_delta,
+        min_r_delta_rounds=args.min_r_delta_rounds,
         k_start=args.k_start,
         k_end=args.k_end,
         exhaustive_pairs=exhaustive_pairs,
