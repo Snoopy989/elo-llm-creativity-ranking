@@ -24,6 +24,7 @@ convergence rules, number of rounds, etc. — without touching the GPU again.
 """
 
 import os
+import csv
 import json
 import random
 import logging
@@ -130,9 +131,11 @@ def build_cache(data_path: str, cache_path: str, batch_size: int = 64,
     logging.info(f"Total pairs to cache: {total:,} (starting at {start_row:,})")
 
     # Write header if starting fresh
+    CACHE_FIELDS = ["response1_id", "response2_id", "idx_a", "idx_b", "item", "winner", "confidence"]
     if start_row == 0:
-        with open(cache_path, "w") as f:
-            f.write("response1_id,response2_id,idx_a,idx_b,item,winner,confidence\n")
+        with open(cache_path, "w", newline="") as f:
+            w = csv.writer(f)
+            w.writerow(CACHE_FIELDS)
 
     # Batch inference with row-level append
     t0 = time.time()
@@ -143,15 +146,15 @@ def build_cache(data_path: str, cache_path: str, batch_size: int = 64,
 
         results = ask_llama_batch(prompts, model, tokenizer, device)
 
-        # Append row by row
-        lines = []
-        for b, r in zip(batch, results):
-            lines.append(
-                f"{b['response1_id']},{b['response2_id']},{b['idx_a']},{b['idx_b']},"
-                f"{b['item']},{r['winner']},{r['confidence']}\n"
-            )
-        with open(cache_path, "a") as f:
-            f.writelines(lines)
+        # Append row by row using csv.writer for proper quoting
+        with open(cache_path, "a", newline="") as f:
+            w = csv.writer(f)
+            for b, r in zip(batch, results):
+                w.writerow([
+                    b["response1_id"], b["response2_id"],
+                    b["idx_a"], b["idx_b"],
+                    b["item"], r["winner"], r["confidence"],
+                ])
 
         done = batch_end
         elapsed = time.time() - t0
@@ -561,8 +564,8 @@ def run_full_pipeline(args):
 
         # Check if cache already complete
         if os.path.exists(cache_path):
-            cached_rows = sum(1 for _ in open(cache_path)) - 1  # minus header
-            total_rows = sum(1 for _ in open(data_file)) - 1
+            cached_rows = len(pd.read_csv(cache_path))
+            total_rows = len(pd.read_csv(data_file))
             if cached_rows >= total_rows:
                 logging.info(f"[{label}] Cache already complete ({cached_rows:,} rows). Skipping.")
                 continue
