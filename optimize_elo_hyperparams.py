@@ -279,9 +279,13 @@ def main():
     parser.add_argument("--item", type=str, default="holes", help="Item to filter for optimization")
     parser.add_argument("--n-sample", type=int, default=2000,
                         help="Number of pairs to sample for inference caching (smaller = faster)")
-    parser.add_argument("--base-model-path", type=str, default="meta-llama/Llama-2-13b-hf")
-    parser.add_argument("--adapter-path", type=str, default="sctt_results_curriculum_10_epochs_Llama-2-13b-hf/phase_3/checkpoint-540000")
-    parser.add_argument("--tokenizer-path", type=str, default="meta-llama/Llama-2-13b-hf")
+    load_dotenv()
+    _model_name = os.getenv("MODEL_NAME", "meta-llama/Llama-2-7b-chat-hf")
+    _model_folder = _model_name.split("/")[-1]
+    parser.add_argument("--base-model-path", type=str, default=_model_name)
+    parser.add_argument("--adapter-path", type=str, default=None,
+                        help="Adapter checkpoint path (default: auto-detect from .env)")
+    parser.add_argument("--tokenizer-path", type=str, default=_model_name)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--output-csv", type=str, default="elo_hyperparam_results.csv")
     args = parser.parse_args()

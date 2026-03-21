@@ -38,22 +38,25 @@ def parse_args() -> argparse.Namespace:
         default="pairs_test.csv",
         help="Path to pairwise split CSV (default: pairs_test.csv)",
     )
+    load_dotenv()
+    _model_name = os.getenv("MODEL_NAME", "meta-llama/Llama-2-7b-chat-hf")
+    _model_folder = _model_name.split("/")[-1]
     parser.add_argument(
         "--base-model-path",
         type=str,
-        default="meta-llama/Llama-2-13b-hf",
+        default=_model_name,
         help="Base model path or HF repo id.",
     )
     parser.add_argument(
         "--adapter-path",
         type=str,
-        default="sctt_results_curriculum_10_epochs_Llama-2-13b-hf/phase_3/checkpoint-540000",
-        help="Path to LoRA adapter checkpoint.",
+        default=None,
+        help="Path to LoRA adapter checkpoint (default: auto-detect from .env).",
     )
     parser.add_argument(
         "--tokenizer-path",
         type=str,
-        default="meta-llama/Llama-2-13b-hf",
+        default=_model_name,
         help="Tokenizer source path/repo id.",
     )
     parser.add_argument(
@@ -111,6 +114,22 @@ def load_model_and_tokenizer(
     adapter_path: str,
     tokenizer_path: str,
 ):
+    # Auto-detect adapter checkpoint from .env if not provided
+    if adapter_path is None:
+        model_name = os.getenv("MODEL_NAME", "meta-llama/Llama-2-7b-chat-hf")
+        model_folder = model_name.split("/")[-1]
+        results_dir = f"sctt_results_curriculum_10_epochs_{model_folder}/phase_3"
+        if os.path.isdir(results_dir):
+            ckpts = sorted(
+                [d for d in os.listdir(results_dir) if d.startswith("checkpoint-")],
+                key=lambda d: int(d.split("-")[1]),
+            )
+            if ckpts:
+                adapter_path = os.path.join(results_dir, ckpts[0])
+                logging.info(f"Auto-selected checkpoint: {adapter_path}")
+        if adapter_path is None:
+            raise ValueError("No adapter checkpoint found and --adapter-path not specified.")
+
     logging.info("Loading tokenizer...")
     tokenizer = AutoTokenizer.from_pretrained(tokenizer_path, use_fast=True)
     if tokenizer.pad_token is None:

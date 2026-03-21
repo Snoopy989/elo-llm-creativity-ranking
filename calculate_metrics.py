@@ -28,6 +28,9 @@ import argparse
 import csv
 import json
 import os
+
+from dotenv import load_dotenv
+load_dotenv()
 import sys
 import time
 import logging
@@ -129,10 +132,11 @@ def load_existing_predictions(detail_path, n_rows):
 BATCH_SIZE = 64   # forward-pass batch size — tune up if GPU memory allows
 
 def process_split(split, csv_path, model, tokenizer, device,
-                  checkpoint_interval, detail_dir):
+                  checkpoint_interval, detail_dir, model_tag=""):
     from inference import ask_llama_batch
 
-    detail_path = os.path.join(detail_dir, f"classification_detail_{split}.csv")
+    suffix = f"_{model_tag}" if model_tag else ""
+    detail_path = os.path.join(detail_dir, f"classification_detail_{split}{suffix}.csv")
 
     # ── load source data ────────────────────────────────────────────────────
     df = pd.read_csv(csv_path)
@@ -256,6 +260,10 @@ def process_split(split, csv_path, model, tokenizer, device,
 # ── entry point ───────────────────────────────────────────────────────────────
 
 def main():
+    # Derive model tag from .env MODEL_NAME (e.g. "Llama-2-7b-chat-hf")
+    model_name_env = os.getenv("MODEL_NAME", "")
+    model_tag = model_name_env.split("/")[-1] if model_name_env else ""
+
     parser = argparse.ArgumentParser(
         description="Resumable pairwise classification metrics over all splits."
     )
@@ -269,17 +277,18 @@ def main():
         "--checkpoint-interval", type=int, default=10_000,
         help="Print live metrics every N rows (default: 10000)."
     )
+    default_output = f"classification_metrics_{model_tag}.csv" if model_tag else "classification_metrics.csv"
     parser.add_argument(
-        "--output-csv", default="classification_metrics.csv",
-        help="Summary CSV path (default: classification_metrics.csv)."
+        "--output-csv", default=default_output,
+        help=f"Summary CSV path (default: {default_output})."
     )
     parser.add_argument(
         "--detail-dir", default=".",
         help="Directory for per-split detail CSVs (default: current dir)."
     )
     parser.add_argument(
-        "--adapter-path",
-        default="sctt_results_curriculum_10_epochs_Llama-2-13b-hf/phase_3/checkpoint-540000",
+        "--adapter-path", default=None,
+        help="Path to LoRA adapter (default: resolved from .env MODEL_NAME)."
     )
     args = parser.parse_args()
 
@@ -303,7 +312,7 @@ def main():
 
         summary = process_split(
             split, csv_path, model, tokenizer, device,
-            args.checkpoint_interval, args.detail_dir
+            args.checkpoint_interval, args.detail_dir, model_tag=model_tag
         )
         if summary:
             summary_rows.append(summary)
@@ -320,8 +329,9 @@ def main():
         print(f"{'='*60}")
         print(summary_df.to_string(index=False))
         print(f"\nSummary saved → {args.output_csv}")
+        suffix = f"_{model_tag}" if model_tag else ""
         for split in args.splits:
-            p = os.path.join(args.detail_dir, f"classification_detail_{split}.csv")
+            p = os.path.join(args.detail_dir, f"classification_detail_{split}{suffix}.csv")
             if os.path.exists(p):
                 print(f"Detail saved  → {p}")
     else:

@@ -362,13 +362,15 @@ class CurriculumTrainer:
 class ModelManager:
     """Manages model loading, configuration, and saving."""
     
-    def __init__(self, base_model: str = "meta-llama/Llama-2-13b-hf"):
+    def __init__(self, base_model: str = None):
         """
         Initialize model manager.
         
         Args:
-            base_model: HuggingFace model name
+            base_model: HuggingFace model name (default: from .env MODEL_NAME)
         """
+        if base_model is None:
+            base_model = os.getenv("MODEL_NAME", "meta-llama/Llama-2-7b-chat-hf")
         self.base_model = base_model
         self.device = self._get_device()
     
@@ -455,7 +457,7 @@ def main():
     print("="*60)
     
     # Initialize model manager
-    model_manager = ModelManager(base_model="meta-llama/Llama-2-13b-hf")
+    model_manager = ModelManager()
     model, tokenizer = model_manager.load_model_and_tokenizer()
     
     # Initialize curriculum trainer

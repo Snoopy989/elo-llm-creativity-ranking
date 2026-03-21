@@ -86,11 +86,43 @@ def _fix_score_head(model, adapter_path):
 
 
 def load_model_and_tokenizer(
-    base_model_path="meta-llama/Llama-2-13b-hf",
-    adapter_path="sctt_results_curriculum_10_epochs_Llama-2-13b-hf/phase_3/checkpoint-540000",
-    tokenizer_path="meta-llama/Llama-2-13b-hf",
+    base_model_path=None,
+    adapter_path=None,
+    tokenizer_path=None,
 ):
-    """Load the fine-tuned model and tokenizer."""
+    """Load the fine-tuned model and tokenizer.
+
+    All paths default to None and are resolved from the MODEL_NAME
+    environment variable (set in .env).  For adapter_path, the best
+    checkpoint is auto-detected from the phase_3 results directory.
+    """
+    load_dotenv()
+    model_name = os.getenv("MODEL_NAME", "meta-llama/Llama-2-7b-chat-hf")
+    model_folder = model_name.split("/")[-1]
+
+    # Authenticate with HuggingFace for gated models
+    hf_token = os.getenv("HUGGINGFACE_TOKEN") or os.getenv("HF_TOKEN")
+    if hf_token:
+        login(token=hf_token, add_to_git_credential=False)
+
+    if base_model_path is None:
+        base_model_path = model_name
+    if tokenizer_path is None:
+        tokenizer_path = model_name
+    if adapter_path is None:
+        # Auto-detect best checkpoint in phase_3 results dir
+        results_dir = f"sctt_results_curriculum_10_epochs_{model_folder}/phase_3"
+        if os.path.isdir(results_dir):
+            ckpts = sorted(
+                [d for d in os.listdir(results_dir) if d.startswith("checkpoint-")],
+                key=lambda d: int(d.split("-")[1]),
+            )
+            if ckpts:
+                adapter_path = os.path.join(results_dir, ckpts[0])
+                logging.info(f"Auto-selected earliest checkpoint: {adapter_path}")
+        if adapter_path is None:
+            logging.warning("No adapter checkpoint found — loading base model only.")
+
     logging.info(f"Loading model from {adapter_path}")
 
     try:
@@ -114,12 +146,16 @@ def load_model_and_tokenizer(
         # Load PEFT adapter (do NOT merge_and_unload — the score/classifier
         # head is in both target_modules and modules_to_save, so merging
         # corrupts the classification head weights)
-        model = PeftModel.from_pretrained(base_model, adapter_path)
+        if adapter_path and os.path.isdir(adapter_path):
+            model = PeftModel.from_pretrained(base_model, adapter_path)
 
-        # Fix score head: PEFT silently drops LoRA weights for the score layer
-        # when it's in both target_modules and modules_to_save.  Reconstruct
-        # the effective weight manually from the checkpoint.
-        _fix_score_head(model, adapter_path)
+            # Fix score head: PEFT silently drops LoRA weights for the score layer
+            # when it's in both target_modules and modules_to_save.  Reconstruct
+            # the effective weight manually from the checkpoint.
+            _fix_score_head(model, adapter_path)
+        else:
+            logging.warning("No adapter path provided — using base model without LoRA.")
+            model = base_model
 
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         model.to(device)
@@ -599,9 +635,11 @@ def main():
 
     parser = argparse.ArgumentParser(description="Run ELO ranking with convergence loop on inference_pairs_val_pairs.csv")
     parser.add_argument("--data-path", type=str, default="inference_pairs_val_pairs.csv", help="Path to pairwise CSV")
-    parser.add_argument("--base-model-path", type=str, default="meta-llama/Llama-2-13b-hf")
-    parser.add_argument("--adapter-path", type=str, default="sctt_results_curriculum_10_epochs_Llama-2-13b-hf/phase_3/checkpoint-540000")
-    parser.add_argument("--tokenizer-path", type=str, default="meta-llama/Llama-2-13b-hf")
+    _model_name = os.getenv("MODEL_NAME", "meta-llama/Llama-2-7b-chat-hf")
+    parser.add_argument("--base-model-path", type=str, default=_model_name)
+    parser.add_argument("--adapter-path", type=str, default=None,
+                        help="Adapter checkpoint path (default: auto-detect from .env MODEL_NAME)")
+    parser.add_argument("--tokenizer-path", type=str, default=_model_name)
     parser.add_argument("--num-pairs", type=int, default=10000, help="Random pairs sampled per ELO round")
     parser.add_argument("--max-rounds", type=int, default=None, help="Max ELO rounds (None = run until convergence)")
     parser.add_argument("--convergence-patience", type=int, default=20, help="Stop if correlation does not improve for this many rounds")
